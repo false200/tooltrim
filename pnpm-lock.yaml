@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^1.13.0
-        version: 1.19.14(hono@4.13.7)
+        version: 1.19.15(hono@4.13.7)
       '@modelcontextprotocol/sdk':
         specifier: ^1.18.0
         version: 1.29.0(supports-color@7.2.0)(zod@3.25.76)
@@ -317,8 +317,8 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
-  '@hono/node-server@1.19.14':
-    resolution: {integrity: sha512-GwtvgtXxnWsucXvbQXkRgqksiH2Qed37H9xHZocE5sA3N8O8O8/8FA3uclQXxXVzc9XBZuEOMK7+r02FmSpHtw==}
+  '@hono/node-server@1.19.15':
+    resolution: {integrity: sha512-Za2ai6TLdKjUvnur+eenO6nuYYipVAEhyCAdaV8IRvmU9kK8crOZUSYvIXn72E4f8fJqyAbpcJuTsYYmZp9Deg==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
@@ -2403,7 +2403,7 @@ snapshots:
       protobufjs: 7.5.6
       yargs: 17.7.2
 
-  '@hono/node-server@1.19.14(hono@4.13.7)':
+  '@hono/node-server@1.19.15(hono@4.13.7)':
     dependencies:
       hono: 4.13.7
 
@@ -2441,7 +2441,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.29.0(supports-color@7.2.0)(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 1.19.14(hono@4.13.7)
+      '@hono/node-server': 1.19.15(hono@4.13.7)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -3448,6 +3448,10 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.4
 
+  fdir@6.5.0(picomatch@4.0.7):
+    optionalDependencies:
+      picomatch: 4.0.7
+
   file-entry-cache@8.0.0:
     dependencies:
       flat-cache: 4.0.1
@@ -4134,8 +4138,8 @@ snapshots:
 
   tinyglobby@0.2.17:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.4)
-      picomatch: 4.0.4
+      fdir: 6.5.0(picomatch@4.0.7)
+      picomatch: 4.0.7
 
   tinyrainbow@3.2.0: {}
 
