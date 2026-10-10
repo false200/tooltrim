@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import pino, { type Logger } from "pino";
+import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import type { TooltrimConfig } from "../config/schema.js";
 
 export interface TraceEvent {
@@ -66,15 +67,25 @@ export class Tracer {
   }
 
   trace(event: TraceEvent): void {
-    if (!this.logger) return;
-    this.logger.info(event, event.method);
+    this.logger?.info(event, event.method);
+    const span = otelTrace.getTracer("tooltrim").startSpan(event.method);
+    span.setAttribute("tooltrim.dir", event.dir);
+    if (event.upstream) span.setAttribute("tooltrim.upstream", event.upstream);
+    if (event.name) span.setAttribute("tooltrim.name", event.name);
+    if (event.ok === false) {
+      span.setStatus(
+        event.err
+          ? { code: SpanStatusCode.ERROR, message: event.err }
+          : { code: SpanStatusCode.ERROR },
+      );
+    }
+    span.end();
   }
 
   async flush(): Promise<void> {
     if (!this.logger) return;
     await new Promise<void>((resolve) => {
-      this.logger!.flush?.();
-      setImmediate(resolve);
+      this.logger!.flush(() => resolve());
     });
   }
 }

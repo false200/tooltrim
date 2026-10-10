@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -32,11 +35,15 @@ async function startHarness(opts: {
   servers: Record<string, ReturnType<typeof echoStdioConfig>>;
   filters?: { allow?: string[]; deny?: string[] };
   shrink?: { mode?: "off" | "rules" | "llm" };
+  policy?: { blockedTools?: string[] };
+  auditPath?: string;
 }): Promise<ProxyHarness> {
   const cfg = buildTestConfig({
     servers: opts.servers,
     filters: opts.filters,
     shrink: opts.shrink,
+    policy: opts.policy,
+    auditPath: opts.auditPath,
     inboundHttp: true,
   });
   // Port 0 → OS picks a free port. Random high ports flake on Windows CI (EACCES).
@@ -157,6 +164,32 @@ describe.sequential("end-to-end proxy", () => {
       const read = await h.client.readResource({ uri: "mem://hello" });
       const c = (read.contents as Array<{ text?: string }>)[0];
       expect(c?.text).toBe("hello world");
+    },
+    30_000,
+  );
+
+  it(
+    "hides blocked tools and writes an audit line for a call",
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-proxy-"));
+      const auditPath = path.join(dir, "audit.ndjson");
+      try {
+        const h = await startHarness({
+          servers: { a: echoStdioConfig("a") },
+          shrink: { mode: "off" },
+          policy: { blockedTools: ["a.delete_thing"] },
+          auditPath,
+        });
+        const names = (await h.client.listTools()).tools.map((t) => t.name);
+        expect(names).toContain("a.echo");
+        expect(names).not.toContain("a.delete_thing");
+        await h.client.callTool({ name: "a.echo", arguments: { text: "hi" } });
+        const audit = await readFile(auditPath, "utf8");
+        expect(audit).toContain('"tool":"a.echo"');
+        expect(audit).toContain('"ok":true');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     },
     30_000,
   );

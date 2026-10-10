@@ -22,7 +22,11 @@ const stdioServerSchema = z.object({
 const httpServerSchema = z.object({
   transport: z.literal("http"),
   url: z.string().url(),
-  /** "passthrough" forwards the inbound `Authorization` header unchanged. "none" sends no auth. "header" sends a literal header from the config. */
+  /**
+   * "passthrough" forwards the inbound `Authorization` header unchanged.
+   * "none" sends no auth. "header" sends a literal header from the config.
+   * Omitted → `policy.defaultAuth`.
+   */
   auth: z
     .union([
       z.literal("passthrough"),
@@ -33,7 +37,7 @@ const httpServerSchema = z.object({
         value: z.string(),
       }),
     ])
-    .default("none"),
+    .optional(),
   /** Optional fixed headers always forwarded. */
   headers: z.record(z.string(), z.string()).optional(),
   shrink: z
@@ -81,7 +85,8 @@ const inboundSchema = z
       .object({
         enabled: z.boolean().default(false),
         host: z.string().default("127.0.0.1"),
-        port: z.number().int().min(1).max(65535).default(8787),
+        /** 0 lets the OS pick a free port. */
+        port: z.number().int().min(0).max(65535).default(8787),
         path: z.string().default("/mcp"),
         sessions: z.union([z.literal("stateless"), z.string()]).default("stateless"),
       })

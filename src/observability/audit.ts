@@ -1,6 +1,7 @@
 import { mkdir, appendFile } from "node:fs/promises";
 import path from "node:path";
 import type { TooltrimConfig } from "../config/schema.js";
+import type { IdentityClaims } from "../policy/oauth.js";
 
 export interface AuditEvent {
   ts?: string;
@@ -9,7 +10,7 @@ export interface AuditEvent {
   ok: boolean;
   durMs?: number;
   /** Identity claims extracted from the inbound auth token (sub, iss, aud, scope). */
-  identity?: Record<string, unknown>;
+  identity?: IdentityClaims;
   argHash?: string;
   err?: string;
 }
@@ -43,10 +44,10 @@ export class AuditLogger {
       this.dirEnsured = true;
     }
     const line = JSON.stringify({ ts: new Date().toISOString(), ...ev });
-    // Serialize writes to prevent interleaving under concurrent requests.
-    this.writeQueue = this.writeQueue.then(() =>
-      appendFile(this.filePath, line + "\n", "utf8"),
-    );
+    // A failed append must not reject the queue, or every later line is dropped.
+    this.writeQueue = this.writeQueue
+      .catch(() => undefined)
+      .then(() => appendFile(this.filePath, line + "\n", "utf8"));
     return this.writeQueue;
   }
 }

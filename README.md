@@ -160,6 +160,8 @@ observability:
 
 Globs match `<server>.<tool>`. Empty `allow` permits all; `deny` wins over `allow`.
 
+HTTP `auth` is optional. When you leave it out, `policy.defaultAuth` is used (`passthrough` unless you change it).
+
 Config search paths include `tooltrim.config.yaml`, `.tooltrim.json`, and a `"tooltrim"` key in `package.json`. `${VAR}` expands from the environment.
 
 ---

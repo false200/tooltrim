@@ -14,11 +14,13 @@ import type { TooltrimConfig } from "../config/schema.js";
 import { child as childLogger } from "../logger.js";
 import { ToolFilter } from "./filter.js";
 import { Shrinker } from "./shrinker.js";
-import type { UpstreamManager } from "../upstream/manager.js";
+import { getInboundContext, type UpstreamManager } from "../upstream/manager.js";
 import type { Tracer } from "../observability/tracer.js";
 import type { MetricsRecorder } from "../observability/metrics.js";
+import type { AuditLogger } from "../observability/audit.js";
+import { VERSION } from "../version.js";
 
-const PROXY_INFO = { name: "tooltrim", version: "0.1.0" };
+const PROXY_INFO = { name: "tooltrim", version: VERSION };
 
 export interface AggregatorDeps {
   cfg: TooltrimConfig;
@@ -27,12 +29,12 @@ export interface AggregatorDeps {
   shrinker: Shrinker;
   tracer?: Tracer;
   metrics?: MetricsRecorder;
+  audit?: AuditLogger;
 }
 
 interface ToolRouteEntry {
   upstreamId: string;
   originalName: string;
-  shrunkInputSchemaCacheKey?: string;
 }
 
 /**
@@ -56,6 +58,7 @@ export class Aggregator {
   private readonly resourceRoute = new Map<string, string>();
   /** Short-lived cache for collectTools() to debounce redundant fan-out. */
   private toolsCache: { tools: unknown[]; ts: number } | null = null;
+  private toolsInflight: Promise<unknown[]> | null = null;
   private readonly TOOLS_CACHE_TTL_MS = 2000;
 
   constructor(deps: AggregatorDeps) {
@@ -141,6 +144,7 @@ export class Aggregator {
           durMs: dur,
         });
         this.deps.metrics?.recordCall(route.upstreamId, name, dur, true);
+        await this.recordAudit(route.upstreamId, name, true, dur);
         return result;
       } catch (err) {
         const dur = Date.now() - start;
@@ -155,6 +159,7 @@ export class Aggregator {
           err: message,
         });
         this.deps.metrics?.recordCall(route.upstreamId, name, dur, false);
+        await this.recordAudit(route.upstreamId, name, false, dur, message);
         throw err;
       }
     });
@@ -213,14 +218,24 @@ export class Aggregator {
    * and return the merged list.
    */
   async collectTools(): Promise<unknown[]> {
-    // Return cached result if fresh enough to avoid redundant upstream fan-out.
     if (this.toolsCache && Date.now() - this.toolsCache.ts < this.TOOLS_CACHE_TTL_MS) {
       return this.toolsCache.tools;
     }
+    if (this.toolsInflight) return this.toolsInflight;
+    const pending = this.loadTools().finally(() => {
+      this.toolsInflight = null;
+    });
+    this.toolsInflight = pending;
+    return pending;
+  }
 
+  private async loadTools(): Promise<unknown[]> {
     this.toolRoute.clear();
     const out: Record<string, unknown>[] = [];
     const timeoutMs = this.deps.cfg.upstreamTimeoutMs ?? 30_000;
+    const countTokens = this.deps.cfg.observability.metrics.prometheus.enabled
+      ? (await import("./tokenizer.js")).countTokens
+      : null;
 
     for (const [id, conn] of this.deps.upstream.connections) {
       if (conn.status !== "connected" || !conn.capabilities?.tools) continue;
@@ -231,9 +246,11 @@ export class Aggregator {
         });
         const result = await Promise.race([conn.client.listTools(), timeout]);
         clearTimeout(timer);
+        const trimmed: Record<string, unknown>[] = [];
         for (const t of result.tools ?? []) {
           const namespaced = this.namespace(id, t.name);
           if (!this.deps.filter.isAllowed(namespaced, "tool")) continue;
+          if (this.deps.cfg.policy.blockedTools.includes(namespaced)) continue;
 
           const cfg = this.deps.cfg.servers[id];
           const perToolMax = cfg && "shrink" in cfg ? cfg.shrink?.maxDescriptionChars : undefined;
@@ -251,14 +268,20 @@ export class Aggregator {
             upstreamId: id,
             originalName: t.name,
           });
-          // Preserve all original fields except for what we shrunk.
-          out.push({
+          const tool = {
             ...t,
             name: namespaced,
             description: shrunk.description,
             inputSchema: shrunk.inputSchema ?? t.inputSchema,
             ...(shrunk.outputSchema ? { outputSchema: shrunk.outputSchema } : {}),
-          });
+          };
+          trimmed.push(tool);
+          out.push(tool);
+        }
+        if (countTokens) {
+          const saved =
+            countTokens(JSON.stringify(result.tools ?? [])) - countTokens(JSON.stringify(trimmed));
+          this.deps.metrics?.setTokensSaved(id, Math.max(0, saved));
         }
       } catch (err) {
         clearTimeout(timer);
@@ -279,6 +302,7 @@ export class Aggregator {
         for (const r of result.resources ?? []) {
           const namespacedKey = this.namespace(id, r.name);
           if (!this.deps.filter.isAllowed(namespacedKey, "resource")) continue;
+          if (this.resourceRoute.has(r.uri)) continue;
           this.resourceRoute.set(r.uri, id);
           out.push(r);
         }
@@ -296,6 +320,8 @@ export class Aggregator {
       try {
         const result = await conn.client.listResourceTemplates();
         for (const t of result.resourceTemplates ?? []) {
+          const namespacedKey = this.namespace(id, t.name);
+          if (!this.deps.filter.isAllowed(namespacedKey, "resource")) continue;
           out.push(t);
         }
       } catch (err) {
@@ -331,6 +357,28 @@ export class Aggregator {
    */
   resolveTool(namespaced: string): { upstreamId: string; originalName: string } | undefined {
     return this.toolRoute.get(namespaced);
+  }
+
+  private async recordAudit(
+    upstream: string,
+    tool: string,
+    ok: boolean,
+    durMs: number,
+    err?: string,
+  ): Promise<void> {
+    if (!this.deps.audit) return;
+    try {
+      await this.deps.audit.record({
+        upstream,
+        tool,
+        ok,
+        durMs,
+        err,
+        identity: getInboundContext()?.identity,
+      });
+    } catch (auditErr) {
+      this.log.warn({ err: errMsg(auditErr) }, "audit write failed");
+    }
   }
 
   private namespace(serverId: string, name: string): string {

@@ -63,6 +63,29 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<LoadedConfig> 
   };
 }
 
+/** Parse YAML or JSON config text. Does not expand env vars. */
+export function parseConfigText(text: string): unknown {
+  return parseYaml(text);
+}
+
+const SECRET_KEY = /token|secret|password|authorization|api[-_]?key/i;
+
+export function redactSecrets(value: unknown): unknown {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (SECRET_KEY.test(k) && typeof v === "string") {
+        out[k] = v.length > 0 ? "***" : v;
+      } else {
+        out[k] = redactSecrets(v);
+      }
+    }
+    return out;
+  }
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  return value;
+}
+
 export function validateConfig(raw: unknown): TooltrimConfig {
   const parsed = tooltrimConfigSchema.safeParse(raw);
   if (!parsed.success) {

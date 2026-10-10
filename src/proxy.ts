@@ -55,6 +55,7 @@ export async function runProxy(opts: RunProxyOptions): Promise<ProxyHandle> {
     shrinker,
     tracer,
     metrics: metricsHandle.recorder,
+    audit,
   });
 
   const closers: Array<() => Promise<void>> = [];
@@ -73,7 +74,6 @@ export async function runProxy(opts: RunProxyOptions): Promise<ProxyHandle> {
       cfg,
       createServer: () => aggregator.createServer(),
       upstream,
-      audit,
     });
     httpPort = handle.port;
     closers.push(handle.close);

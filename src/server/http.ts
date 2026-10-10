@@ -2,8 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Server as McpServerLowLevel } from "@modelcontextprotocol/sdk/server/index.js";
 import type { TooltrimConfig } from "../config/schema.js";
-import type { UpstreamManager } from "../upstream/manager.js";
-import type { AuditLogger } from "../observability/audit.js";
+import { runWithInboundContext, type UpstreamManager } from "../upstream/manager.js";
 import { unsafeDecodeBearer } from "../policy/oauth.js";
 import { child as childLogger } from "../logger.js";
 
@@ -27,7 +26,6 @@ export async function startHttpServer(args: {
   cfg: TooltrimConfig;
   createServer: () => McpServerLowLevel;
   upstream: UpstreamManager;
-  audit: AuditLogger;
 }): Promise<InboundHttpHandle> {
   const { cfg, createServer: createMcp, upstream } = args;
   const log = childLogger({ component: "inbound-http" });
@@ -62,13 +60,8 @@ export async function startHttpServer(args: {
       return;
     }
 
-    // Stash inbound auth for the lifetime of this request so upstream HTTP
-    // pass-through can pick it up.
-    const auth = req.headers["authorization"];
-    if (typeof auth === "string") {
-      upstream.setInboundAuth({ authorization: auth });
-    }
-    const identity = unsafeDecodeBearer(typeof auth === "string" ? auth : undefined);
+    const auth = typeof req.headers["authorization"] === "string" ? req.headers["authorization"] : undefined;
+    const identity = unsafeDecodeBearer(auth);
 
     // Stateless: fresh transport AND fresh Server instance per request, per
     // the Streamable HTTP spec and the official SDK example.
@@ -77,13 +70,13 @@ export async function startHttpServer(args: {
     res.on("close", () => {
       transport.close().catch(() => undefined);
       mcp.close().catch(() => undefined);
-      upstream.clearInboundAuth();
     });
 
     try {
-      await mcp.connect(transport);
-      (req as IncomingMessage & { identity?: unknown }).identity = identity;
-      await transport.handleRequest(req, res);
+      await runWithInboundContext({ authorization: auth, identity }, async () => {
+        await mcp.connect(transport);
+        await transport.handleRequest(req, res);
+      });
     } catch (err) {
       log.warn({ err: (err as Error).message }, "HTTP request handling failed");
       if (!res.headersSent) {
