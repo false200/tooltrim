@@ -28,15 +28,21 @@ export function echoStdioConfig(serverId: string, env: Record<string, string> = 
 export function buildTestConfig(partial: {
   servers: Record<string, unknown>;
   filters?: { allow?: string[]; deny?: string[] };
-  shrink?: { mode?: "off" | "rules" | "llm"; maxDescriptionChars?: number };
+  shrink?: { mode?: "off" | "rules" | "llm"; maxDescriptionChars?: number; cachePath?: string };
   inboundHttp?: boolean;
+  policy?: { blockedTools?: string[]; defaultAuth?: "passthrough" | "none" };
+  auditPath?: string;
 }): TooltrimConfig {
   return tooltrimConfigSchema.parse({
     servers: partial.servers,
     filters: partial.filters ?? {},
-    shrink: partial.shrink ?? { mode: "rules", cachePath: "" },
+    shrink: { cachePath: "", ...partial.shrink },
     inbound: { stdio: false, http: { enabled: !!partial.inboundHttp } },
-    observability: { trace: { sink: "off" }, audit: { enabled: false } },
+    observability: {
+      trace: { sink: "off" },
+      audit: partial.auditPath ? { enabled: true, path: partial.auditPath } : { enabled: false },
+    },
+    policy: partial.policy ?? {},
     logLevel: "silent",
   });
 }

@@ -1,3 +1,6 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { Shrinker } from "../../src/core/shrinker.js";
 
@@ -53,6 +56,42 @@ describe("Shrinker - description rules", () => {
     const desc = "**This tool** is verbose.";
     expect(s.shrinkDescription(desc, 80)).toBe(desc);
   });
+
+  it("keeps snake_case names and type parameters", () => {
+    const s = new Shrinker(baseOpts);
+    const out = s.shrinkDescription(
+      "Pass max_tokens and call __init__. Returns List<User> from <code>id</code>.",
+      160,
+    );
+    expect(out).toContain("max_tokens");
+    expect(out).toContain("__init__");
+    expect(out).toContain("List<User>");
+    expect(out).not.toContain("<code>");
+  });
+
+  it("does not keep a whole paragraph when the next period is far away", () => {
+    const s = new Shrinker({ ...baseOpts, maxDescriptionChars: 30 });
+    const desc = `${"word ".repeat(40).trim()}.`;
+    const out = s.shrinkDescription(desc, 30);
+    expect(out.length).toBeLessThanOrEqual(31);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  it("does not cache an llm miss", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-shrink-"));
+    const cachePath = path.join(dir, "cache.json");
+    const s = new Shrinker({
+      mode: "llm",
+      maxDescriptionChars: 40,
+      dedupeSchemas: false,
+      cachePath,
+    });
+    await s.loadCache();
+    const input = "A long original description that should stay uncached.";
+    expect(s.shrinkDescription(input, 40)).toBe(input);
+    await s.flushCache();
+    await expect(readFile(cachePath, "utf8")).rejects.toThrow();
+  });
 });
 
 describe("Shrinker - schema dedup", () => {
@@ -78,6 +117,25 @@ describe("Shrinker - schema dedup", () => {
     expect(defKeys.length).toBeGreaterThanOrEqual(1);
     expect(props.author.$ref).toMatch(/^#\/\$defs\//);
     expect(props.reviewer.$ref).toBe(props.author.$ref);
+  });
+
+  it("does not turn an existing $defs entry into a self-reference", () => {
+    const s = new Shrinker(baseOpts);
+    const userSchema = {
+      type: "object",
+      properties: { id: { type: "string" } },
+    };
+    const schema = {
+      type: "object",
+      $defs: { Existing: { type: "object", properties: { z: { type: "string" } } } },
+      properties: { author: userSchema, reviewer: userSchema },
+    };
+    const out = s.dedupeSchema(schema as any) as any;
+    const ref = out.properties.author.$ref as string;
+    const id = ref.replace("#/$defs/", "");
+    expect(out.$defs[id].type).toBe("object");
+    expect(out.$defs[id].$ref).toBeUndefined();
+    expect(out.$defs.Existing.properties.z.type).toBe("string");
   });
 
   it("leaves single-occurrence schemas alone", () => {

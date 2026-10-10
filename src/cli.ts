@@ -1,12 +1,11 @@
 import { cac } from "cac";
-import { loadConfig, validateConfig } from "./config/load.js";
+import { loadConfig, parseConfigText, redactSecrets, validateConfig } from "./config/load.js";
 import { runProxy } from "./proxy.js";
 import { runMeasure } from "./cli/measure.js";
 import { runTraceTail } from "./cli/trace.js";
 import { configureLogger, getLogger } from "./logger.js";
 import { readFile } from "node:fs/promises";
-
-const VERSION = "0.1.0";
+import { VERSION } from "./version.js";
 
 async function main(): Promise<void> {
   const cli = cac("tooltrim");
@@ -52,10 +51,9 @@ async function main(): Promise<void> {
   cli
     .command("validate-file <path>", "Validate a raw config file (no env expansion)")
     .action(async (filePath: string) => {
-      const text = await readFile(filePath, "utf8");
       try {
-        const parsed = JSON.parse(text);
-        validateConfig(parsed);
+        const text = await readFile(filePath, "utf8");
+        validateConfig(parseConfigText(text));
         process.stdout.write("OK\n");
       } catch (err) {
         process.stderr.write(`${(err as Error).message}\n`);
@@ -99,22 +97,6 @@ async function startProxyCmd(configPath?: string): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
-}
-
-function redactSecrets(value: unknown): unknown {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (/token|secret|password|apikey/i.test(k) && typeof v === "string") {
-        out[k] = v.length > 0 ? "***" : v;
-      } else {
-        out[k] = redactSecrets(v);
-      }
-    }
-    return out;
-  }
-  if (Array.isArray(value)) return value.map(redactSecrets);
-  return value;
 }
 
 main().catch((err) => {

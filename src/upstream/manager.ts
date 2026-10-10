@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -5,17 +6,39 @@ import type { Logger } from "pino";
 import type {
   HttpServerConfig,
   TooltrimConfig,
-  ServerConfig,
   StdioServerConfig,
 } from "../config/schema.js";
 import { child as childLogger } from "../logger.js";
+import type { IdentityClaims } from "../policy/oauth.js";
+import { VERSION } from "../version.js";
 import type { UpstreamConnection, UpstreamStatus } from "./types.js";
 
-const PROXY_CLIENT_INFO = { name: "tooltrim", version: "0.1.0" };
+const PROXY_CLIENT_INFO = { name: "tooltrim", version: VERSION };
 
-interface AuthHeaders {
-  /** Inbound Authorization header from the current MCP client request. */
+export interface InboundContext {
   authorization?: string;
+  identity?: IdentityClaims;
+}
+
+// One process serves many HTTP clients. Auth has to follow the request.
+const inboundContext = new AsyncLocalStorage<InboundContext>();
+
+export function runWithInboundContext<T>(ctx: InboundContext, fn: () => Promise<T>): Promise<T> {
+  return inboundContext.run(ctx, fn);
+}
+
+export function getInboundContext(): InboundContext | undefined {
+  return inboundContext.getStore();
+}
+
+/** Authorization header to add when this upstream's auth mode is passthrough. */
+export function resolvePassthroughAuthorization(
+  serverAuth: HttpServerConfig["auth"] | undefined,
+  defaultAuth: "passthrough" | "none",
+): string | undefined {
+  const mode = serverAuth ?? defaultAuth;
+  if (mode !== "passthrough") return undefined;
+  return inboundContext.getStore()?.authorization;
 }
 
 /**
@@ -34,8 +57,6 @@ export class UpstreamManager {
   private readonly httpHeaders = new Map<string, Record<string, string>>();
   private readonly statusListeners = new Set<StatusListener>();
   private closing = false;
-  /** Per-async-context auth headers (Authorization: ...) to forward upstream. */
-  private currentAuth: AuthHeaders = {};
 
   constructor(cfg: TooltrimConfig) {
     this.cfg = cfg;
@@ -59,19 +80,6 @@ export class UpstreamManager {
 
   get connections(): ReadonlyMap<string, UpstreamConnection> {
     return this.conns;
-  }
-
-  /**
-   * Set the inbound `Authorization` header for the duration of a single
-   * inbound request. Upstream HTTP transports will pick it up via the
-   * dynamic-header hook installed at connect time.
-   */
-  setInboundAuth(auth: AuthHeaders): void {
-    this.currentAuth = auth;
-  }
-
-  clearInboundAuth(): void {
-    this.currentAuth = {};
   }
 
   async connectAll(): Promise<void> {
@@ -192,10 +200,8 @@ export class UpstreamManager {
 
     const dynamicFetch: typeof fetch = (input, init) => {
       const merged: Record<string, string> = { ...this.httpHeaders.get(id) };
-      // Pass-through Authorization header when configured.
-      if (cfg.auth === "passthrough" && this.currentAuth.authorization) {
-        merged["Authorization"] = this.currentAuth.authorization;
-      }
+      const authorization = resolvePassthroughAuthorization(cfg.auth, this.cfg.policy.defaultAuth);
+      if (authorization) merged["Authorization"] = authorization;
       const headers = new Headers(init?.headers);
       for (const [k, v] of Object.entries(merged)) {
         if (!headers.has(k)) headers.set(k, v);
@@ -253,13 +259,6 @@ export class UpstreamManager {
     this.restartTimers.set(id, timer);
   }
 
-  /**
-   * Mark a connection as having a particular status (used by tests).
-   */
-  setStatus(id: string, status: UpstreamStatus): void {
-    const conn = this.conns.get(id);
-    if (conn) conn.status = status;
-  }
 }
 
 function errMsg(err: unknown): string {

@@ -71,12 +71,13 @@ export async function startMetrics(cfg: TooltrimConfig): Promise<MetricsServerHa
   const log = childLogger({ component: "metrics" });
   const registry = new Registry();
   registry.setDefaultLabels({ service: "tooltrim" });
-  collectDefaultMetrics({ register: registry });
   const recorder = new MetricsRecorder(registry);
 
   if (!cfg.observability.metrics.prometheus.enabled) {
     return { registry, recorder, close: async () => undefined };
   }
+
+  collectDefaultMetrics({ register: registry });
 
   const { host, port, path: metricsPath } = cfg.observability.metrics.prometheus;
 

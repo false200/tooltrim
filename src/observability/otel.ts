@@ -1,5 +1,6 @@
 import type { TooltrimConfig } from "../config/schema.js";
 import { child as childLogger } from "../logger.js";
+import { VERSION } from "../version.js";
 
 export interface OtelHandle {
   shutdown: () => Promise<void>;
@@ -22,15 +23,15 @@ export async function startOtel(cfg: TooltrimConfig): Promise<OtelHandle | null>
   try {
     const { NodeSDK } = await import("@opentelemetry/sdk-node");
     const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
-    const { Resource } = await import("@opentelemetry/resources");
+    const { resourceFromAttributes } = await import("@opentelemetry/resources");
     const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
       "@opentelemetry/semantic-conventions"
     );
 
     const sdk = new NodeSDK({
-      resource: new Resource({
+      resource: resourceFromAttributes({
         [ATTR_SERVICE_NAME]: "tooltrim",
-        [ATTR_SERVICE_VERSION]: "0.1.0",
+        [ATTR_SERVICE_VERSION]: VERSION,
       }),
       traceExporter: new OTLPTraceExporter({ url: `${endpoint.replace(/\/$/, "")}/v1/traces` }),
     });

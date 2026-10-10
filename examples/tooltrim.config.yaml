@@ -65,6 +65,7 @@ observability:
     path: .tooltrim/audit.ndjson
 
 policy:
+  # Used when an HTTP server omits `auth`.
   defaultAuth: passthrough
   blockedTools: []
 

@@ -58,8 +58,8 @@ export async function runMeasure(opts: MeasureOptions = {}): Promise<void> {
       const cfgServer = config.servers[id];
       const perToolMax =
         cfgServer && "shrink" in cfgServer ? cfgServer.shrink?.maxDescriptionChars : undefined;
-      const shrunk = filtered.map((t) =>
-        shrinker.shrinkTool(
+      const shrunk = filtered.map((t) => {
+        const next = shrinker.shrinkTool(
           {
             name: t.name,
             description: t.description,
@@ -67,8 +67,15 @@ export async function runMeasure(opts: MeasureOptions = {}): Promise<void> {
             outputSchema: t.outputSchema as Record<string, unknown> | undefined,
           },
           perToolMax,
-        ),
-      );
+        );
+        return {
+          ...t,
+          name: next.name,
+          description: next.description,
+          inputSchema: next.inputSchema ?? t.inputSchema,
+          ...(next.outputSchema ? { outputSchema: next.outputSchema } : {}),
+        };
+      });
 
       const rawJson = JSON.stringify(raw);
       const trimmedJson = JSON.stringify(shrunk);

@@ -46,6 +46,11 @@ const BOILERPLATE_PHRASES: RegExp[] = [
   /\bthis\s+(tool|function|method|api|service|endpoint|operation)\s+/gi,
 ];
 
+// Closing tags, tags with attributes, and a short list of common tags.
+// `List<User>` has none of those, so type parameters stay intact.
+const HTML_TAG =
+  /<\/?[A-Za-z][^>]*\s[^>]*>|<\/[A-Za-z][^>]*>|<[A-Za-z][^>]*\/>|<(?:br|hr|p|li|ul|ol|div|span|code|pre|em|strong|b|i|a|img|blockquote|h[1-6])>/gi;
+
 const FILLER_PHRASES: Array<[RegExp, string]> = [
   [/\bplease\s+/gi, ""],
   [/\bnote\s+that\s+/gi, ""],
@@ -132,10 +137,11 @@ export class Shrinker {
     const cached = this.cache.entries[cacheKey];
     if (cached !== undefined) return cached;
 
-    const result =
-      this.opts.mode === "llm"
-        ? input // LLM mode is offline-only; use cache when it's been populated.
-        : this.applyRules(input, maxChars);
+    if (this.opts.mode === "llm") {
+      // A miss must stay a miss. Caching the original would hide a later offline fill.
+      return input;
+    }
+    const result = this.applyRules(input, maxChars);
 
     this.cache.entries[cacheKey] = result;
     this.cacheDirty = true;
@@ -147,12 +153,12 @@ export class Shrinker {
 
     // 1. strip code-fence markers and html tags
     s = s.replace(/```[\s\S]*?```/g, " ");
-    s = s.replace(/<[^>]+>/g, " ");
+    s = s.replace(HTML_TAG, " ");
 
     // 2. strip markdown decoration
     s = s.replace(/^#{1,6}\s+/gm, ""); // headings
-    s = s.replace(/(\*\*|__)(.*?)\1/g, "$2"); // bold
-    s = s.replace(/(\*|_)(.*?)\1/g, "$2"); // italic
+    s = s.replace(/\*\*(.+?)\*\*/g, "$1"); // bold
+    s = s.replace(/\*([^*\n]+)\*/g, "$1"); // italic. `_` stays: it is snake_case and __init__, not emphasis.
     s = s.replace(/`([^`]+)`/g, "$1"); // inline code
     s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, ""); // images
     s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1"); // links
@@ -185,7 +191,9 @@ export class Shrinker {
 
     // 9. truncate at the first sentence boundary past `maxChars`
     if (s.length > maxChars) {
-      const sliceEnd = this.findSentenceEnd(s, maxChars);
+      let sliceEnd = this.findSentenceEnd(s, maxChars);
+      // Finish a nearby sentence, but a single huge sentence must still stop.
+      if (sliceEnd > maxChars * 2) sliceEnd = maxChars;
       s = s.slice(0, sliceEnd).trimEnd();
       if (!/[.!?…]$/.test(s)) s += "…";
     }
@@ -230,13 +238,15 @@ export class Shrinker {
     };
     visit(root);
 
-    const defs: Record<string, unknown> = (root.$defs as Record<string, unknown>) ?? {};
+    const priorDefs = { ...((root.$defs as Record<string, unknown> | undefined) ?? {}) };
+    delete root.$defs;
+    const defs: Record<string, unknown> = { ...priorDefs };
     const refMap = new Map<string, string>();
     let nextId = Object.keys(defs).length;
     for (const [hash, info] of counts) {
       if (info.count >= 2) {
         const id = `mdShared${nextId++}`;
-        defs[id] = info.sample;
+        defs[id] = JSON.parse(JSON.stringify(info.sample)) as unknown;
         refMap.set(hash, id);
       }
     }
