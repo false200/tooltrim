@@ -106,8 +106,18 @@ export class UpstreamManager {
   async connectOne(id: string): Promise<UpstreamConnection> {
     const cfg = this.cfg.servers[id];
     if (!cfg) throw new Error(`unknown upstream server "${id}"`);
-    if (this.conns.has(id) && this.conns.get(id)!.status === "connected") {
-      return this.conns.get(id)!;
+    if (this.closing) {
+      const existing = this.conns.get(id);
+      if (existing) return existing;
+      throw new Error(`upstream "${id}" is shutting down`);
+    }
+    const previous = this.conns.get(id);
+    if (previous?.status === "connected") return previous;
+    if (previous) {
+      // Drop handlers first so close() does not schedule another reconnect.
+      previous.client.onclose = undefined;
+      previous.client.onerror = undefined;
+      void previous.client.close().catch(() => undefined);
     }
     this.log.info({ id, transport: cfg.transport }, "connecting upstream");
 
@@ -129,9 +139,21 @@ export class UpstreamManager {
         lastError: error,
       };
       this.conns.set(id, conn);
+      if (this.closing) {
+        void client.close().catch(() => undefined);
+        conn.status = "closed";
+        return conn;
+      }
       this.emitStatus(id, "errored");
       this.scheduleReconnect(id);
       return conn;
+    }
+
+    if (this.closing) {
+      void client.close().catch(() => undefined);
+      const closed: UpstreamConnection = { id, client, status: "closed" };
+      this.conns.set(id, closed);
+      return closed;
     }
 
     const conn: UpstreamConnection = {
@@ -141,9 +163,6 @@ export class UpstreamManager {
       capabilities: client.getServerCapabilities(),
       serverInfo: client.getServerVersion(),
     };
-    if (cfg.transport === "http") {
-      conn.setRequestHeaders = (headers) => this.setHttpHeaders(id, headers);
-    }
     this.conns.set(id, conn);
     this.restartCounts.set(id, 0);
     this.attachLifecycleHandlers(conn);
@@ -165,7 +184,8 @@ export class UpstreamManager {
     const transport = new StdioClientTransport({
       command,
       args,
-      env: cfg.env ? { ...process.env as Record<string, string>, ...cfg.env } : undefined,
+      // SDK merges this onto PATH/HOME/…. Spreading process.env would hand the child every secret.
+      env: cfg.env,
       cwd: cfg.cwd,
       stderr: "pipe",
     });
@@ -215,11 +235,6 @@ export class UpstreamManager {
     await client.connect(transport);
   }
 
-  private setHttpHeaders(id: string, headers: Record<string, string>): void {
-    const existing = this.httpHeaders.get(id) ?? {};
-    this.httpHeaders.set(id, { ...existing, ...headers });
-  }
-
   private attachLifecycleHandlers(conn: UpstreamConnection): void {
     conn.client.onclose = () => {
       if (this.closing) return;
@@ -250,8 +265,11 @@ export class UpstreamManager {
     const delay = Math.min(baseBackoff * Math.pow(2, attempt - 1), 30_000);
     this.restartCounts.set(id, attempt);
     this.log.info({ id, attempt, delayMs: delay }, "scheduling upstream reconnect");
+    const pending = this.restartTimers.get(id);
+    if (pending) clearTimeout(pending);
     const timer = setTimeout(() => {
       this.restartTimers.delete(id);
+      if (this.closing) return;
       this.connectOne(id).catch((err) => {
         this.log.warn({ id, err: errMsg(err) }, "reconnect attempt failed");
       });

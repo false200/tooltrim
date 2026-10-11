@@ -87,7 +87,7 @@ export async function startMetrics(cfg: TooltrimConfig): Promise<MetricsServerHa
       res.end();
       return;
     }
-    const url = new URL(req.url, `http://${host}:${port}`);
+    const url = new URL(req.url, "http://127.0.0.1");
     if (url.pathname === metricsPath) {
       res.setHeader("Content-Type", registry.contentType);
       res.end(await registry.metrics());

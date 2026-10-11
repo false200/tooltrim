@@ -97,15 +97,16 @@ export function validateConfig(raw: unknown): TooltrimConfig {
   return parsed.data;
 }
 
-const ENV_PATTERN = /\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/gi;
-
 function expandEnv<T>(value: T): T {
   if (typeof value === "string") {
-    return value.replace(ENV_PATTERN, (_match, name: string, fallback?: string) => {
+    const pattern = /\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/gi;
+    return value.replace(pattern, (_match, name: string, fallback?: string) => {
       const envValue = process.env[name];
       if (envValue !== undefined) return envValue;
       if (fallback !== undefined) return fallback;
-      return "";
+      throw new Error(
+        `Missing environment variable ${name}. Set it, or use \${${name}:-default} in the config.`,
+      );
     }) as unknown as T;
   }
   if (Array.isArray(value)) {

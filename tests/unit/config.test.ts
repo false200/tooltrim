@@ -1,7 +1,10 @@
 import { createRequire } from "node:module";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { tooltrimConfigSchema } from "../../src/config/schema.js";
-import { parseConfigText, redactSecrets, validateConfig } from "../../src/config/load.js";
+import { loadConfig, parseConfigText, redactSecrets, validateConfig } from "../../src/config/load.js";
 import { VERSION } from "../../src/version.js";
 
 const require = createRequire(import.meta.url);
@@ -83,6 +86,37 @@ describe("config schema", () => {
 
   it("reports the package version", () => {
     expect(VERSION).toBe(pkg.version);
+  });
+
+  it("fails startup when a referenced env var is unset", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-cfg-"));
+    const file = path.join(dir, "tooltrim.config.yaml");
+    await writeFile(
+      file,
+      'servers:\n  x:\n    transport: stdio\n    command: ["node", "${MISSING_TOOLTRIM_VAR}"]\n',
+    );
+    delete process.env.MISSING_TOOLTRIM_VAR;
+    try {
+      await expect(loadConfig({ configPath: file })).rejects.toThrow(/MISSING_TOOLTRIM_VAR/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses ${VAR:-default} when the variable is unset", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-cfg-"));
+    const file = path.join(dir, "tooltrim.config.yaml");
+    await writeFile(
+      file,
+      'servers:\n  x:\n    transport: stdio\n    command: ["node", "${MISSING_TOOLTRIM_VAR:-fallback}"]\n',
+    );
+    delete process.env.MISSING_TOOLTRIM_VAR;
+    try {
+      const { config } = await loadConfig({ configPath: file });
+      expect(config.servers.x.transport === "stdio" && config.servers.x.command[1]).toBe("fallback");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("normalizes empty optional sections via defaults", () => {

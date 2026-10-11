@@ -41,7 +41,8 @@ export async function startHttpServer(args: {
   }
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url ?? "/", `http://${host}:${boundPort}`);
+    // Fixed base: `host` may be an IPv6 address, which is not a valid URL host bare.
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
     if (url.pathname === "/healthz") {
       const upstreams = [...upstream.connections.values()].map((c) => ({
