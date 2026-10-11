@@ -10,9 +10,4 @@ export interface UpstreamConnection {
   capabilities?: ServerCapabilities;
   serverInfo?: { name: string; version: string };
   lastError?: Error;
-  /**
-   * Per-call HTTP headers to merge into outbound HTTP requests, used for
-   * inbound `Authorization` pass-through. stdio upstreams ignore this.
-   */
-  setRequestHeaders?: (headers: Record<string, string>) => void;
 }

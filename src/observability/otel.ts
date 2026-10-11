@@ -13,8 +13,9 @@ export interface OtelHandle {
 export async function startOtel(cfg: TooltrimConfig): Promise<OtelHandle | null> {
   const log = childLogger({ component: "otel" });
   const otelCfg = cfg.observability.metrics.otel;
-  const endpoint = otelCfg.endpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-  if (!otelCfg.enabled && !endpoint) return null;
+  // `enabled: false` stays off even when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+  if (!otelCfg.enabled) return null;
+  const endpoint = otelCfg.endpoint || process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
   if (!endpoint) {
     log.warn("OTel enabled but no endpoint configured; skipping init");
     return null;

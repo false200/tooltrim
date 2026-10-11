@@ -92,6 +92,30 @@ describe("Shrinker - description rules", () => {
     await s.flushCache();
     await expect(readFile(cachePath, "utf8")).rejects.toThrow();
   });
+
+  it("does not reuse a rules cache entry in llm mode", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-shrink-"));
+    const cachePath = path.join(dir, "cache.json");
+    const input = "This tool does a thing. It has more words than the cap allows here.";
+    const rules = new Shrinker({
+      mode: "rules",
+      maxDescriptionChars: 40,
+      dedupeSchemas: false,
+      cachePath,
+    });
+    await rules.loadCache();
+    expect(rules.shrinkDescription(input, 40)).not.toBe(input);
+    await rules.flushCache();
+
+    const llm = new Shrinker({
+      mode: "llm",
+      maxDescriptionChars: 40,
+      dedupeSchemas: false,
+      cachePath,
+    });
+    await llm.loadCache();
+    expect(llm.shrinkDescription(input, 40)).toBe(input);
+  });
 });
 
 describe("Shrinker - schema dedup", () => {

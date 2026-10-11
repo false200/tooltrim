@@ -1,8 +1,9 @@
 import { UpstreamManager } from "../upstream/manager.js";
+import { eachPage } from "../core/aggregator.js";
 import { ToolFilter } from "../core/filter.js";
 import { Shrinker } from "../core/shrinker.js";
 import { byteLength, countTokens } from "../core/tokenizer.js";
-import { configureLogger } from "../logger.js";
+import { configureLogger, getLogger } from "../logger.js";
 import { loadConfig } from "../config/load.js";
 
 interface ServerRow {
@@ -48,13 +49,19 @@ export async function runMeasure(opts: MeasureOptions = {}): Promise<void> {
         });
         continue;
       }
-      const result = await conn.client.listTools();
-      const raw = result.tools ?? [];
+      const { items: raw, truncated } = await eachPage(async (cursor) => {
+        const result = await conn.client.listTools(cursor ? { cursor } : undefined);
+        return { items: result.tools ?? [], nextCursor: result.nextCursor };
+      });
+      if (truncated) getLogger().warn({ id }, "stopped after 50 tools/list pages");
+      const blocked = new Set(config.policy.blockedTools);
       const namespaced = raw.map((t) => ({
         ...t,
         name: `${id}${config.namespaceSeparator}${t.name}`,
       }));
-      const filtered = namespaced.filter((t) => filter.isAllowed(t.name, "tool"));
+      const filtered = namespaced.filter(
+        (t) => filter.isAllowed(t.name, "tool") && !blocked.has(t.name),
+      );
       const cfgServer = config.servers[id];
       const perToolMax =
         cfgServer && "shrink" in cfgServer ? cfgServer.shrink?.maxDescriptionChars : undefined;
