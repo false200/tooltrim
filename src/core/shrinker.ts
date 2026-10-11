@@ -133,7 +133,7 @@ export class Shrinker {
 
   shrinkDescription(input: string, maxChars: number): string {
     if (this.opts.mode === "off") return input;
-    const cacheKey = `desc:${maxChars}:${this.hash(input)}`;
+    const cacheKey = `desc:${this.opts.mode}:${maxChars}:${this.hash(input)}`;
     const cached = this.cache.entries[cacheKey];
     if (cached !== undefined) return cached;
 

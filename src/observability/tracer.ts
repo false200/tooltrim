@@ -68,10 +68,15 @@ export class Tracer {
 
   trace(event: TraceEvent): void {
     this.logger?.info(event, event.method);
-    const span = otelTrace.getTracer("tooltrim").startSpan(event.method);
+    // "out" is only the start log. One span covers the call, using the measured duration.
+    if (event.dir === "out") return;
+    const end = Date.now();
+    const start = event.durMs !== undefined ? end - event.durMs : end;
+    const span = otelTrace.getTracer("tooltrim").startSpan(event.method, { startTime: start });
     span.setAttribute("tooltrim.dir", event.dir);
     if (event.upstream) span.setAttribute("tooltrim.upstream", event.upstream);
     if (event.name) span.setAttribute("tooltrim.name", event.name);
+    if (event.durMs !== undefined) span.setAttribute("tooltrim.dur_ms", event.durMs);
     if (event.ok === false) {
       span.setStatus(
         event.err
@@ -79,7 +84,7 @@ export class Tracer {
           : { code: SpanStatusCode.ERROR },
       );
     }
-    span.end();
+    span.end(end);
   }
 
   async flush(): Promise<void> {

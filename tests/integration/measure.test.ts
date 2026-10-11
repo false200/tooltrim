@@ -57,6 +57,38 @@ describe("tooltrim measure", () => {
     },
     30_000,
   );
+
+  it(
+    "omits blocked tools from the trimmed count",
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-"));
+      const cfgPath = path.join(dir, "tooltrim.config.json");
+      const cfg = {
+        servers: {
+          a: {
+            transport: "stdio",
+            command: ["node", tsxCli, echoStdio],
+            env: { ECHO_SERVER_NAME: "a" },
+          },
+        },
+        shrink: { mode: "off", cachePath: path.join(dir, "cache.json") },
+        observability: { trace: { sink: "off" } },
+        inbound: { stdio: false, http: { enabled: false } },
+        policy: { blockedTools: ["a.delete_thing"] },
+        logLevel: "silent",
+      };
+      await writeFile(cfgPath, JSON.stringify(cfg), "utf8");
+
+      try {
+        const { stdout, code } = await runCli(["measure", "--config", cfgPath]);
+        expect(code).toBe(0);
+        expect(stdout).toMatch(/3 → 2/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 });
 
 function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {

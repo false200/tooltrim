@@ -149,4 +149,73 @@ describe("Aggregator listings", () => {
     expect(calls).toBe(1);
     expect(a).toBe(b);
   });
+
+  it("follows tools/list cursors", async () => {
+    const cfg = cfgFor(["gh"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listTools: async (params?: { cursor?: string }) => {
+            if (!params?.cursor) {
+              return {
+                tools: [{ name: "one", description: "x", inputSchema: { type: "object" } }],
+                nextCursor: "p2",
+              };
+            }
+            return {
+              tools: [{ name: "two", description: "x", inputSchema: { type: "object" } }],
+            };
+          },
+        },
+        { tools: {} },
+      ),
+    ]);
+    const tools = (await agg.collectTools()) as Array<{ name: string }>;
+    expect(tools.map((t) => t.name)).toEqual(["gh.one", "gh.two"]);
+  });
+
+  it("stops a tools/list cursor that never ends", async () => {
+    let calls = 0;
+    const cfg = cfgFor(["gh"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listTools: async () => {
+            calls += 1;
+            return {
+              tools: [{ name: `t${calls}`, description: "x", inputSchema: { type: "object" } }],
+              nextCursor: `p${calls}`,
+            };
+          },
+        },
+        { tools: {} },
+      ),
+    ]);
+    const tools = (await agg.collectTools()) as Array<{ name: string }>;
+    expect(calls).toBe(50);
+    expect(tools).toHaveLength(50);
+  });
+
+  it("swallows a tools/list failure that arrives after the timeout", async () => {
+    const cfg = cfgFor(["gh"]);
+    cfg.upstreamTimeoutMs = 20;
+    let rejectList: (err: Error) => void = () => undefined;
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listTools: () =>
+            new Promise((_, reject) => {
+              rejectList = reject;
+            }),
+        },
+        { tools: {} },
+      ),
+    ]);
+    await expect(agg.collectTools()).resolves.toEqual([]);
+    rejectList(new Error("late failure"));
+    await new Promise((r) => setTimeout(r, 20));
+  });
 });

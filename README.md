@@ -162,7 +162,7 @@ Globs match `<server>.<tool>`. Empty `allow` permits all; `deny` wins over `allo
 
 HTTP `auth` is optional. When you leave it out, `policy.defaultAuth` is used (`passthrough` unless you change it).
 
-Config search paths include `tooltrim.config.yaml`, `.tooltrim.json`, and a `"tooltrim"` key in `package.json`. `${VAR}` expands from the environment.
+Config search paths include `tooltrim.config.yaml`, `.tooltrim.json`, and a `"tooltrim"` key in `package.json`. `${VAR}` expands from the environment. If that variable is unset and you did not write `${VAR:-default}`, startup fails instead of inserting an empty string.
 
 ---
 
