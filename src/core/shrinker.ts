@@ -204,6 +204,20 @@ export class Shrinker {
     for (let i = minChars; i < s.length; i++) {
       const ch = s[i];
       if (ch === "." || ch === "!" || ch === "?") {
+        // "10.5" is not the end of a sentence.
+        const prev = s[i - 1];
+        const next = s[i + 1];
+        if (
+          ch === "." &&
+          prev !== undefined &&
+          next !== undefined &&
+          prev >= "0" &&
+          prev <= "9" &&
+          next >= "0" &&
+          next <= "9"
+        ) {
+          continue;
+        }
         return i + 1;
       }
     }

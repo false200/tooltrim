@@ -6,6 +6,12 @@ export interface OtelHandle {
   shutdown: () => Promise<void>;
 }
 
+/** OTLP HTTP traces URL. `OTEL_EXPORTER_OTLP_ENDPOINT` is a base; a full traces URL is left as-is. */
+export function otlpTracesUrl(endpoint: string): string {
+  const base = endpoint.replace(/\/$/, "");
+  return base.endsWith("/v1/traces") ? base : `${base}/v1/traces`;
+}
+
 /**
  * Lazy-init the OpenTelemetry SDK only when explicitly enabled.
  * Avoids loading the heavy OTel packages when the user just wants the proxy.
@@ -34,7 +40,7 @@ export async function startOtel(cfg: TooltrimConfig): Promise<OtelHandle | null>
         [ATTR_SERVICE_NAME]: "tooltrim",
         [ATTR_SERVICE_VERSION]: VERSION,
       }),
-      traceExporter: new OTLPTraceExporter({ url: `${endpoint.replace(/\/$/, "")}/v1/traces` }),
+      traceExporter: new OTLPTraceExporter({ url: otlpTracesUrl(endpoint) }),
     });
     sdk.start();
     log.info({ endpoint }, "OpenTelemetry SDK started");

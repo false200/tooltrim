@@ -133,7 +133,7 @@ const policySchema = z
   .object({
     /** Default for all upstream HTTP calls when not specified per-server. */
     defaultAuth: z.enum(["passthrough", "none"]).default("passthrough"),
-    /** Tools whose call must be denied unconditionally (post-filter). */
+    /** Namespaced (`server.tool`) or original tool names. A call with either form is denied. */
     blockedTools: z.array(z.string()).default([]),
   })
   .default({});

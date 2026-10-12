@@ -1,5 +1,5 @@
 import { UpstreamManager } from "../upstream/manager.js";
-import { eachPage } from "../core/aggregator.js";
+import { eachPage, isBlockedTool, raceTimeout } from "../core/aggregator.js";
 import { ToolFilter } from "../core/filter.js";
 import { Shrinker } from "../core/shrinker.js";
 import { byteLength, countTokens } from "../core/tokenizer.js";
@@ -49,19 +49,34 @@ export async function runMeasure(opts: MeasureOptions = {}): Promise<void> {
         });
         continue;
       }
-      const { items: raw, truncated } = await eachPage(async (cursor) => {
-        const result = await conn.client.listTools(cursor ? { cursor } : undefined);
+      const {
+        items: raw,
+        truncated,
+        err,
+      } = await eachPage(async (cursor) => {
+        const result = await raceTimeout(
+          conn.client.listTools(cursor ? { cursor } : undefined),
+          config.upstreamTimeoutMs,
+          `upstream "${id}" tools/list timed out after ${config.upstreamTimeoutMs}ms`,
+        );
         return { items: result.tools ?? [], nextCursor: result.nextCursor };
       });
-      if (truncated) getLogger().warn({ id }, "stopped after 50 tools/list pages");
-      const blocked = new Set(config.policy.blockedTools);
-      const namespaced = raw.map((t) => ({
-        ...t,
-        name: `${id}${config.namespaceSeparator}${t.name}`,
-      }));
-      const filtered = namespaced.filter(
-        (t) => filter.isAllowed(t.name, "tool") && !blocked.has(t.name),
-      );
+      if (truncated) {
+        getLogger().warn(
+          { id, err },
+          err ? "tools/list stopped early" : "stopped after 50 tools/list pages",
+        );
+      }
+      const blocked = config.policy.blockedTools;
+      const filtered = raw
+        .filter((t) => {
+          const name = `${id}${config.namespaceSeparator}${t.name}`;
+          return filter.isAllowed(name, "tool") && !isBlockedTool(blocked, name, t.name);
+        })
+        .map((t) => ({
+          ...t,
+          name: `${id}${config.namespaceSeparator}${t.name}`,
+        }));
       const cfgServer = config.servers[id];
       const perToolMax =
         cfgServer && "shrink" in cfgServer ? cfgServer.shrink?.maxDescriptionChars : undefined;
@@ -142,9 +157,7 @@ function printTable(rows: ServerRow[]): void {
     ];
   });
 
-  const widths = headers.map((h, i) =>
-    Math.max(h.length, ...lines.map((row) => row[i]!.length)),
-  );
+  const widths = headers.map((h, i) => Math.max(h.length, ...lines.map((row) => row[i]!.length)));
 
   const fmt = (cells: string[]) =>
     cells.map((c, i) => (i === 0 ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ");

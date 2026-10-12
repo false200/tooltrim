@@ -24,10 +24,7 @@ describe("Shrinker - description rules", () => {
 
   it("removes filler phrases", () => {
     const s = new Shrinker(baseOpts);
-    const out = s.shrinkDescription(
-      "Please utilize this tool in order to perform a query.",
-      120,
-    );
+    const out = s.shrinkDescription("Please utilize this tool in order to perform a query.", 120);
     expect(out.toLowerCase()).not.toContain("please");
     expect(out.toLowerCase()).not.toContain("in order to");
     expect(out.toLowerCase()).not.toContain("utilize");
@@ -35,8 +32,7 @@ describe("Shrinker - description rules", () => {
 
   it("truncates at the first sentence boundary past maxChars", () => {
     const s = new Shrinker({ ...baseOpts, maxDescriptionChars: 30 });
-    const desc =
-      "Aaaaaa bbbbbbb ccccccc ddddddd eeeeeee. Fffff ggggg hhhhh. Iiiiiiii jjjjjj.";
+    const desc = "Aaaaaa bbbbbbb ccccccc ddddddd eeeeeee. Fffff ggggg hhhhh. Iiiiiiii jjjjjj.";
     const out = s.shrinkDescription(desc, 30);
     expect(out.length).toBeLessThanOrEqual(50);
     expect(out).toMatch(/[.!?…]$/);
@@ -67,6 +63,12 @@ describe("Shrinker - description rules", () => {
     expect(out).toContain("__init__");
     expect(out).toContain("List<User>");
     expect(out).not.toContain("<code>");
+  });
+
+  it("does not cut a decimal number", () => {
+    const s = new Shrinker({ ...baseOpts, maxDescriptionChars: 8 });
+    const out = s.shrinkDescription("abcdef 10.5.", 8);
+    expect(out).toContain("10.5");
   });
 
   it("does not keep a whole paragraph when the next period is far away", () => {

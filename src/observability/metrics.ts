@@ -22,7 +22,7 @@ export class MetricsRecorder {
   constructor(registry: Registry) {
     this.callsTotal = new Counter({
       name: "tooltrim_calls_total",
-      help: "Total tool/resource/prompt calls forwarded by Tooltrim.",
+      help: "Total tools/call requests forwarded by Tooltrim.",
       labelNames: ["upstream", "tool", "ok"],
       registers: [registry],
     });
@@ -35,7 +35,7 @@ export class MetricsRecorder {
     });
     this.tokensSavedGauge = new Gauge({
       name: "tooltrim_tokens_saved",
-      help: "Tokens removed from tool listings by filtering and shrinking, since startup.",
+      help: "Tokens removed from the latest tools/list for this upstream, versus the raw list.",
       labelNames: ["upstream"],
       registers: [registry],
     });
