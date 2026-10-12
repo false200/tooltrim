@@ -72,9 +72,11 @@ const SECRET_KEY = /token|secret|password|authorization|api[-_]?key/i;
 
 export function redactSecrets(value: unknown): unknown {
   if (value && typeof value === "object" && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    const headerSecret = obj.type === "header";
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (SECRET_KEY.test(k) && typeof v === "string") {
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "string" && (SECRET_KEY.test(k) || (headerSecret && k === "value"))) {
         out[k] = v.length > 0 ? "***" : v;
       } else {
         out[k] = redactSecrets(v);
@@ -83,7 +85,17 @@ export function redactSecrets(value: unknown): unknown {
     return out;
   }
   if (Array.isArray(value)) return value.map(redactSecrets);
+  if (typeof value === "string") return redactSecretText(value);
   return value;
+}
+
+function redactSecretText(value: string): string {
+  let out = value.replace(/:\/\/[^/\s:@]+:[^/\s@]+@/g, "://***@");
+  for (const [key, envValue] of Object.entries(process.env)) {
+    if (!envValue || envValue.length < 8 || !SECRET_KEY.test(key)) continue;
+    if (out.includes(envValue)) out = out.split(envValue).join("***");
+  }
+  return out;
 }
 
 export function validateConfig(raw: unknown): TooltrimConfig {

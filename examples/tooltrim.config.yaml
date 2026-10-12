@@ -59,7 +59,7 @@ observability:
       port: 9464
     otel:
       enabled: false
-      endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT}"
+      endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
   audit:
     enabled: true
     path: .tooltrim/audit.ndjson

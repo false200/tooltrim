@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { tooltrimConfigSchema } from "../../src/config/schema.js";
-import { loadConfig, parseConfigText, redactSecrets, validateConfig } from "../../src/config/load.js";
+import {
+  loadConfig,
+  parseConfigText,
+  redactSecrets,
+  validateConfig,
+} from "../../src/config/load.js";
 import { VERSION } from "../../src/version.js";
 
 const require = createRequire(import.meta.url);
@@ -75,13 +80,30 @@ describe("config schema", () => {
   });
 
   it("redacts api_key and authorization values", () => {
-    expect(
-      redactSecrets({
-        API_KEY: "super-secret",
-        Authorization: "Bearer abc",
+    const previous = process.env.TOOLTRIM_TEST_TOKEN;
+    process.env.TOOLTRIM_TEST_TOKEN = "super-secret-value";
+    try {
+      expect(
+        redactSecrets({
+          API_KEY: "super-secret",
+          Authorization: "Bearer abc",
+          name: "visible",
+          auth: { type: "header", name: "Authorization", value: "ghp_literal" },
+          url: "https://user:s3cret@example.com/mcp",
+          command: ["--token", "super-secret-value"],
+        }),
+      ).toEqual({
+        API_KEY: "***",
+        Authorization: "***",
         name: "visible",
-      }),
-    ).toEqual({ API_KEY: "***", Authorization: "***", name: "visible" });
+        auth: { type: "header", name: "Authorization", value: "***" },
+        url: "https://***@example.com/mcp",
+        command: ["--token", "***"],
+      });
+    } finally {
+      if (previous === undefined) delete process.env.TOOLTRIM_TEST_TOKEN;
+      else process.env.TOOLTRIM_TEST_TOKEN = previous;
+    }
   });
 
   it("reports the package version", () => {
@@ -113,7 +135,9 @@ describe("config schema", () => {
     delete process.env.MISSING_TOOLTRIM_VAR;
     try {
       const { config } = await loadConfig({ configPath: file });
-      expect(config.servers.x.transport === "stdio" && config.servers.x.command[1]).toBe("fallback");
+      expect(config.servers.x.transport === "stdio" && config.servers.x.command[1]).toBe(
+        "fallback",
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

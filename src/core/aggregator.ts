@@ -25,19 +25,60 @@ const PROXY_INFO = { name: "tooltrim", version: VERSION };
 // shortcut: 50 pages, raise if a real catalog is larger
 const MAX_LIST_PAGES = 50;
 
-/** Follow an MCP list `nextCursor` until it stops. */
+/**
+ * Follow an MCP list `nextCursor` until it stops.
+ * A failure after the first page keeps the items already collected.
+ */
 export async function eachPage<T>(
   load: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor?: string }>,
-): Promise<{ items: T[]; truncated: boolean }> {
+): Promise<{ items: T[]; truncated: boolean; err?: string }> {
   const items: T[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_LIST_PAGES; page++) {
-    const result = await load(cursor);
+    let result: { items: T[]; nextCursor?: string };
+    try {
+      result = await load(cursor);
+    } catch (err) {
+      if (items.length === 0) throw err;
+      return { items, truncated: true, err: err instanceof Error ? err.message : String(err) };
+    }
     items.push(...result.items);
     if (!result.nextCursor || result.nextCursor === cursor) return { items, truncated: false };
     cursor = result.nextCursor;
   }
   return { items, truncated: true };
+}
+
+export function isBlockedTool(
+  blocked: readonly string[],
+  namespaced: string,
+  original: string,
+): boolean {
+  return blocked.includes(namespaced) || blocked.includes(original);
+}
+
+/** Race `work` against a timer. A late rejection must not surface as unhandled. */
+export async function raceTimeout<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  void work.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function listStop(kind: string, err?: string): string {
+  return err ? `${kind} stopped early` : `${kind} stopped after 50 pages`;
 }
 
 export interface AggregatorDeps {
@@ -77,6 +118,9 @@ export class Aggregator {
   /** Short-lived cache for collectTools() to debounce redundant fan-out. */
   private toolsCache: { tools: unknown[]; ts: number } | null = null;
   private toolsInflight: Promise<unknown[]> | null = null;
+  private promptsInflight: Promise<unknown[]> | null = null;
+  private resourcesInflight: Promise<unknown[]> | null = null;
+  private templatesInflight: Promise<unknown[]> | null = null;
   private readonly TOOLS_CACHE_TTL_MS = 2000;
 
   constructor(deps: AggregatorDeps) {
@@ -104,10 +148,11 @@ export class Aggregator {
    * is filtered live at `tools/list`, so this just unblocks the negotiation.
    */
   private computePlausibleCapabilities(): ServerCapabilities {
+    // listChanged stays off: nothing emits list_changed, so clients must not wait for it.
     return {
-      tools: { listChanged: true },
-      resources: { listChanged: true, subscribe: false },
-      prompts: { listChanged: true },
+      tools: {},
+      resources: { subscribe: false },
+      prompts: {},
       logging: {},
     };
   }
@@ -133,7 +178,7 @@ export class Aggregator {
       if (!this.deps.filter.isAllowed(name, "tool")) {
         throw new Error(`tool "${name}" is denied by Tooltrim policy`);
       }
-      if (this.deps.cfg.policy.blockedTools.includes(name)) {
+      if (isBlockedTool(this.deps.cfg.policy.blockedTools, name, route.originalName)) {
         throw new Error(`tool "${name}" is on the blockedTools list`);
       }
       const conn = this.deps.upstream.connections.get(route.upstreamId);
@@ -203,7 +248,9 @@ export class Aggregator {
         throw new Error(`resource "${uri}" not found in Tooltrim routing table`);
       }
       const conn = this.deps.upstream.connections.get(upstreamId);
-      if (!conn) throw new Error(`upstream "${upstreamId}" is not connected`);
+      if (!conn || conn.status !== "connected") {
+        throw new Error(`upstream "${upstreamId}" is not connected`);
+      }
       return await conn.client.readResource({ uri });
     });
 
@@ -223,7 +270,9 @@ export class Aggregator {
         throw new Error(`prompt "${name}" not found in Tooltrim routing table`);
       }
       const conn = this.deps.upstream.connections.get(route.upstreamId);
-      if (!conn) throw new Error(`upstream "${route.upstreamId}" is not connected`);
+      if (!conn || conn.status !== "connected") {
+        throw new Error(`upstream "${route.upstreamId}" is not connected`);
+      }
       return await conn.client.getPrompt({
         name: route.original,
         arguments: req.params.arguments,
@@ -248,7 +297,6 @@ export class Aggregator {
   }
 
   private async loadTools(): Promise<unknown[]> {
-    this.toolRoute.clear();
     const countTokens = this.deps.cfg.observability.metrics.prometheus.enabled
       ? (await import("./tokenizer.js")).countTokens
       : null;
@@ -257,7 +305,11 @@ export class Aggregator {
       [...this.deps.upstream.connections].map(async ([id, conn]) => {
         if (conn.status !== "connected" || !conn.capabilities?.tools) return [];
         try {
-          const { items: listed, truncated } = await eachPage(async (cursor) => {
+          const {
+            items: listed,
+            truncated,
+            err,
+          } = await eachPage(async (cursor) => {
             const result = await this.callWithTimeout(
               id,
               "tools/list",
@@ -265,12 +317,19 @@ export class Aggregator {
             );
             return { items: result.tools ?? [], nextCursor: result.nextCursor };
           });
-          if (truncated) this.log.warn({ id }, "stopped after 50 tools/list pages");
-          const trimmed: Record<string, unknown>[] = [];
+          if (truncated) this.log.warn({ id, err }, listStop("tools/list", err));
+          const trimmed: Array<{
+            namespaced: string;
+            route: ToolRouteEntry;
+            tool: Record<string, unknown>;
+          }> = [];
+          const seen = new Set<string>();
           for (const t of listed) {
             const namespaced = this.namespace(id, t.name);
+            if (seen.has(namespaced)) continue;
+            seen.add(namespaced);
             if (!this.deps.filter.isAllowed(namespaced, "tool")) continue;
-            if (this.deps.cfg.policy.blockedTools.includes(namespaced)) continue;
+            if (isBlockedTool(this.deps.cfg.policy.blockedTools, namespaced, t.name)) continue;
 
             const cfg = this.deps.cfg.servers[id];
             const perToolMax = cfg && "shrink" in cfg ? cfg.shrink?.maxDescriptionChars : undefined;
@@ -284,21 +343,22 @@ export class Aggregator {
               perToolMax,
             );
 
-            this.toolRoute.set(namespaced, {
-              upstreamId: id,
-              originalName: t.name,
-            });
             trimmed.push({
-              ...t,
-              name: namespaced,
-              description: shrunk.description,
-              inputSchema: shrunk.inputSchema ?? t.inputSchema,
-              ...(shrunk.outputSchema ? { outputSchema: shrunk.outputSchema } : {}),
+              namespaced,
+              route: { upstreamId: id, originalName: t.name },
+              tool: {
+                ...t,
+                name: namespaced,
+                description: shrunk.description,
+                inputSchema: shrunk.inputSchema ?? t.inputSchema,
+                ...(shrunk.outputSchema ? { outputSchema: shrunk.outputSchema } : {}),
+              },
             });
           }
           if (countTokens) {
             const saved =
-              countTokens(JSON.stringify(listed)) - countTokens(JSON.stringify(trimmed));
+              countTokens(JSON.stringify(listed)) -
+              countTokens(JSON.stringify(trimmed.map((item) => item.tool)));
             this.deps.metrics?.setTokensSaved(id, Math.max(0, saved));
           }
           return trimmed;
@@ -308,7 +368,18 @@ export class Aggregator {
         }
       }),
     );
-    const out = batches.flat();
+    const nextRoute = new Map<string, ToolRouteEntry>();
+    const out: unknown[] = [];
+    for (const item of batches.flat()) {
+      if (nextRoute.has(item.namespaced)) {
+        this.log.warn({ name: item.namespaced }, "duplicate tool name; keeping the first");
+        continue;
+      }
+      nextRoute.set(item.namespaced, item.route);
+      out.push(item.tool);
+    }
+    this.toolRoute.clear();
+    for (const [k, v] of nextRoute) this.toolRoute.set(k, v);
     this.toolsCache = { tools: out, ts: Date.now() };
     return out;
   }
@@ -317,30 +388,30 @@ export class Aggregator {
    * Race an upstream call against the config timeout. A late rejection must not
    * become an unhandled rejection after the timeout already won.
    */
-  private async callWithTimeout<T>(id: string, method: string, work: Promise<T>): Promise<T> {
-    void work.catch(() => undefined);
+  private callWithTimeout<T>(id: string, method: string, work: Promise<T>): Promise<T> {
     const timeoutMs = this.deps.cfg.upstreamTimeoutMs ?? 30_000;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`upstream "${id}" ${method} timed out after ${timeoutMs}ms`)),
-          timeoutMs,
-        );
-      });
-      return await Promise.race([work, timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
+    return raceTimeout(
+      work,
+      timeoutMs,
+      `upstream "${id}" ${method} timed out after ${timeoutMs}ms`,
+    );
   }
 
   async collectResources(): Promise<unknown[]> {
-    this.resourceRoute.clear();
+    if (this.resourcesInflight) return this.resourcesInflight;
+    const pending = this.loadResources().finally(() => {
+      this.resourcesInflight = null;
+    });
+    this.resourcesInflight = pending;
+    return pending;
+  }
+
+  private async loadResources(): Promise<unknown[]> {
     const groups = await Promise.all(
       [...this.deps.upstream.connections].map(async ([id, conn]) => {
         if (conn.status !== "connected" || !conn.capabilities?.resources) return [];
         try {
-          const { items, truncated } = await eachPage(async (cursor) => {
+          const { items, truncated, err } = await eachPage(async (cursor) => {
             const result = await this.callWithTimeout(
               id,
               "resources/list",
@@ -348,7 +419,7 @@ export class Aggregator {
             );
             return { items: result.resources ?? [], nextCursor: result.nextCursor };
           });
-          if (truncated) this.log.warn({ id }, "stopped after 50 resources/list pages");
+          if (truncated) this.log.warn({ id, err }, listStop("resources/list", err));
           return items.map((r) => ({ id, resource: r }));
         } catch (err) {
           this.log.warn({ id, err: errMsg(err) }, "upstream resources/list failed");
@@ -356,25 +427,46 @@ export class Aggregator {
         }
       }),
     );
+    const next = new Map<string, string>();
     const out: unknown[] = [];
     for (const group of groups) {
       for (const { id, resource: r } of group) {
         const namespacedKey = this.namespace(id, r.name);
         if (!this.deps.filter.isAllowed(namespacedKey, "resource")) continue;
-        if (this.resourceRoute.has(r.uri)) continue;
-        this.resourceRoute.set(r.uri, id);
-        out.push(r);
+        const kept = next.get(r.uri);
+        if (kept) {
+          if (kept !== id) {
+            this.log.warn(
+              { uri: r.uri, kept, skipped: id },
+              "duplicate resource uri; keeping the first",
+            );
+          }
+          continue;
+        }
+        next.set(r.uri, id);
+        out.push({ ...r, name: namespacedKey });
       }
     }
+    this.resourceRoute.clear();
+    for (const [k, v] of next) this.resourceRoute.set(k, v);
     return out;
   }
 
   async collectResourceTemplates(): Promise<unknown[]> {
+    if (this.templatesInflight) return this.templatesInflight;
+    const pending = this.loadResourceTemplates().finally(() => {
+      this.templatesInflight = null;
+    });
+    this.templatesInflight = pending;
+    return pending;
+  }
+
+  private async loadResourceTemplates(): Promise<unknown[]> {
     const groups = await Promise.all(
       [...this.deps.upstream.connections].map(async ([id, conn]) => {
         if (conn.status !== "connected" || !conn.capabilities?.resources) return [];
         try {
-          const { items, truncated } = await eachPage(async (cursor) => {
+          const { items, truncated, err } = await eachPage(async (cursor) => {
             const result = await this.callWithTimeout(
               id,
               "resources/templates/list",
@@ -382,8 +474,10 @@ export class Aggregator {
             );
             return { items: result.resourceTemplates ?? [], nextCursor: result.nextCursor };
           });
-          if (truncated) this.log.warn({ id }, "stopped after 50 resource template pages");
-          return items.filter((t) => this.deps.filter.isAllowed(this.namespace(id, t.name), "resource"));
+          if (truncated) this.log.warn({ id, err }, listStop("resources/templates/list", err));
+          return items
+            .filter((t) => this.deps.filter.isAllowed(this.namespace(id, t.name), "resource"))
+            .map((t) => ({ ...t, name: this.namespace(id, t.name) }));
         } catch (err) {
           this.log.debug({ id, err: errMsg(err) }, "resourceTemplates/list unsupported");
           return [];
@@ -394,12 +488,20 @@ export class Aggregator {
   }
 
   async collectPrompts(): Promise<unknown[]> {
-    this.promptRoute.clear();
+    if (this.promptsInflight) return this.promptsInflight;
+    const pending = this.loadPrompts().finally(() => {
+      this.promptsInflight = null;
+    });
+    this.promptsInflight = pending;
+    return pending;
+  }
+
+  private async loadPrompts(): Promise<unknown[]> {
     const groups = await Promise.all(
       [...this.deps.upstream.connections].map(async ([id, conn]) => {
         if (conn.status !== "connected" || !conn.capabilities?.prompts) return [];
         try {
-          const { items, truncated } = await eachPage(async (cursor) => {
+          const { items, truncated, err } = await eachPage(async (cursor) => {
             const result = await this.callWithTimeout(
               id,
               "prompts/list",
@@ -407,13 +509,23 @@ export class Aggregator {
             );
             return { items: result.prompts ?? [], nextCursor: result.nextCursor };
           });
-          if (truncated) this.log.warn({ id }, "stopped after 50 prompts/list pages");
-          const out: Record<string, unknown>[] = [];
+          if (truncated) this.log.warn({ id, err }, listStop("prompts/list", err));
+          const out: Array<{
+            namespaced: string;
+            route: { upstreamId: string; original: string };
+            prompt: Record<string, unknown>;
+          }> = [];
+          const seen = new Set<string>();
           for (const p of items) {
             const namespaced = this.namespace(id, p.name);
+            if (seen.has(namespaced)) continue;
+            seen.add(namespaced);
             if (!this.deps.filter.isAllowed(namespaced, "prompt")) continue;
-            this.promptRoute.set(namespaced, { upstreamId: id, original: p.name });
-            out.push({ ...p, name: namespaced });
+            out.push({
+              namespaced,
+              route: { upstreamId: id, original: p.name },
+              prompt: { ...p, name: namespaced },
+            });
           }
           return out;
         } catch (err) {
@@ -422,7 +534,19 @@ export class Aggregator {
         }
       }),
     );
-    return groups.flat();
+    const next = new Map<string, { upstreamId: string; original: string }>();
+    const out: unknown[] = [];
+    for (const item of groups.flat()) {
+      if (next.has(item.namespaced)) {
+        this.log.warn({ name: item.namespaced }, "duplicate prompt name; keeping the first");
+        continue;
+      }
+      next.set(item.namespaced, item.route);
+      out.push(item.prompt);
+    }
+    this.promptRoute.clear();
+    for (const [k, v] of next) this.promptRoute.set(k, v);
+    return out;
   }
 
   /**

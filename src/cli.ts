@@ -13,9 +13,9 @@ async function main(): Promise<void> {
   cli.help();
 
   cli
-    .command("[]", "Start the proxy (default)")
+    .command("", "Start the proxy (default)")
     .option("-c, --config <path>", "Path to tooltrim.config.yaml")
-    .action(async (_input: string[], flags: { config?: string }) => {
+    .action(async (flags: { config?: string }) => {
       await startProxyCmd(flags.config);
     });
 

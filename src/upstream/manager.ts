@@ -3,11 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Logger } from "pino";
-import type {
-  HttpServerConfig,
-  TooltrimConfig,
-  StdioServerConfig,
-} from "../config/schema.js";
+import type { HttpServerConfig, TooltrimConfig, StdioServerConfig } from "../config/schema.js";
 import { child as childLogger } from "../logger.js";
 import type { IdentityClaims } from "../policy/oauth.js";
 import { VERSION } from "../version.js";
@@ -174,11 +170,7 @@ export class UpstreamManager {
     return conn;
   }
 
-  private async connectStdio(
-    id: string,
-    cfg: StdioServerConfig,
-    client: Client,
-  ): Promise<void> {
+  private async connectStdio(id: string, cfg: StdioServerConfig, client: Client): Promise<void> {
     const [command, ...args] = cfg.command;
     if (!command) throw new Error(`upstream "${id}" stdio command is empty`);
     const transport = new StdioClientTransport({
@@ -193,25 +185,23 @@ export class UpstreamManager {
     let stderrMinuteStart = Date.now();
     const stderrBudget = cfg.stderrLogBytesPerMinute ?? 10_000;
 
+    transport.stderr?.on("error", () => undefined);
     transport.stderr?.on("data", (chunk: Buffer) => {
+      if (!this.log.isLevelEnabled("debug")) return;
       const now = Date.now();
       if (now - stderrMinuteStart > 60_000) {
         stderrBytesThisMinute = 0;
         stderrMinuteStart = now;
       }
-      if (stderrBudget === 0 || stderrBytesThisMinute < stderrBudget) {
-        this.log.debug({ id, chunk: chunk.toString("utf8").trim() }, "upstream stderr");
-        stderrBytesThisMinute += chunk.length;
-      }
+      const clipped = clipStderr(chunk, stderrBytesThisMinute, stderrBudget);
+      if (!clipped) return;
+      stderrBytesThisMinute = clipped.used;
+      this.log.debug({ id, chunk: clipped.text.trim() }, "upstream stderr");
     });
     await client.connect(transport);
   }
 
-  private async connectHttp(
-    id: string,
-    cfg: HttpServerConfig,
-    client: Client,
-  ): Promise<void> {
+  private async connectHttp(id: string, cfg: HttpServerConfig, client: Client): Promise<void> {
     const baseHeaders: Record<string, string> = { ...(cfg.headers ?? {}) };
     if (cfg.auth && typeof cfg.auth === "object" && cfg.auth.type === "header") {
       baseHeaders[cfg.auth.name] = cfg.auth.value;
@@ -243,11 +233,12 @@ export class UpstreamManager {
       this.emitStatus(conn.id, "errored");
       this.scheduleReconnect(conn.id);
     };
+    // Protocol noise (a stray progress notification, a late response) calls
+    // onerror without closing the pipe. Marking the upstream down here
+    // sticks until process exit, because only onclose reconnects.
     conn.client.onerror = (err) => {
       this.log.warn({ id: conn.id, err: err.message }, "upstream error");
-      conn.status = "errored";
       conn.lastError = err;
-      this.emitStatus(conn.id, "errored");
     };
   }
 
@@ -276,9 +267,20 @@ export class UpstreamManager {
     }, delay);
     this.restartTimers.set(id, timer);
   }
-
 }
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Bytes of `chunk` that still fit in this minute's stderr budget. `budget` 0 is unlimited. */
+export function clipStderr(
+  chunk: Buffer,
+  used: number,
+  budget: number,
+): { text: string; used: number } | undefined {
+  if (budget !== 0 && used >= budget) return undefined;
+  const take = budget === 0 ? chunk.length : Math.min(chunk.length, budget - used);
+  if (take <= 0) return undefined;
+  return { text: chunk.subarray(0, take).toString("utf8"), used: used + take };
 }

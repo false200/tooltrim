@@ -4,9 +4,37 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { tooltrimConfigSchema } from "../../src/config/schema.js";
 import { configureLogger } from "../../src/logger.js";
-import { UpstreamManager } from "../../src/upstream/manager.js";
+import { clipStderr, UpstreamManager } from "../../src/upstream/manager.js";
+import { echoStdioConfig } from "../helpers.js";
 
 describe("UpstreamManager", () => {
+  it("clips stderr to the remaining budget", () => {
+    const chunk = Buffer.from("abcdefghij");
+    expect(clipStderr(chunk, 0, 4)?.text).toBe("abcd");
+    expect(clipStderr(chunk, 4, 4)).toBeUndefined();
+    expect(clipStderr(chunk, 0, 0)?.text).toBe("abcdefghij");
+  });
+
+  it("does not drop a live upstream on a protocol error", async () => {
+    configureLogger({ level: "silent" });
+    const echo = echoStdioConfig("x");
+    const cfg = tooltrimConfigSchema.parse({
+      servers: { x: { ...echo, maxRestarts: 0 } },
+      logLevel: "silent",
+      shrink: { mode: "off", cachePath: "" },
+      observability: { trace: { sink: "off" } },
+    });
+    const mgr = new UpstreamManager(cfg);
+    try {
+      await mgr.connectOne("x");
+      const conn = mgr.connections.get("x");
+      expect(conn?.status).toBe("connected");
+      conn?.client.onerror?.(new Error("Received a progress notification for an unknown token"));
+      expect(conn?.status).toBe("connected");
+    } finally {
+      await mgr.closeAll();
+    }
+  }, 15_000);
   it("does not connect after shutdown", async () => {
     configureLogger({ level: "silent" });
     const cfg = tooltrimConfigSchema.parse({
@@ -63,7 +91,9 @@ describe("UpstreamManager", () => {
   });
 });
 
-async function waitForJson(file: string): Promise<{ leak: string | null; token: string | null; path: string }> {
+async function waitForJson(
+  file: string,
+): Promise<{ leak: string | null; token: string | null; path: string }> {
   const started = Date.now();
   for (;;) {
     try {

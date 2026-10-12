@@ -30,10 +30,7 @@ function fakeConn(
   };
 }
 
-function aggregator(
-  cfg: TooltrimConfig,
-  conns: UpstreamConnection[],
-): Aggregator {
+function aggregator(cfg: TooltrimConfig, conns: UpstreamConnection[]): Aggregator {
   const connections = new Map(conns.map((c) => [c.id, c]));
   return new Aggregator({
     cfg,
@@ -83,8 +80,12 @@ describe("Aggregator listings", () => {
         { resources: {} },
       ),
     ]);
-    const resources = (await agg.collectResources()) as Array<{ description?: string }>;
+    const resources = (await agg.collectResources()) as Array<{
+      name?: string;
+      description?: string;
+    }>;
     expect(resources).toHaveLength(1);
+    expect(resources[0]?.name).toBe("a.readme");
     expect(resources[0]?.description).toBe("from-a");
   });
 
@@ -120,7 +121,7 @@ describe("Aggregator listings", () => {
       ),
     ]);
     const templates = (await agg.collectResourceTemplates()) as Array<{ name: string }>;
-    expect(templates.map((t) => t.name)).toEqual(["docs"]);
+    expect(templates.map((t) => t.name)).toEqual(["pub.docs"]);
   });
 
   it("fans out tools/list once when two callers overlap", async () => {
@@ -196,6 +197,108 @@ describe("Aggregator listings", () => {
     const tools = (await agg.collectTools()) as Array<{ name: string }>;
     expect(calls).toBe(50);
     expect(tools).toHaveLength(50);
+  });
+
+  it("keeps tools from earlier pages when a later page fails", async () => {
+    const cfg = cfgFor(["gh"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listTools: async (params?: { cursor?: string }) => {
+            if (!params?.cursor) {
+              return {
+                tools: [{ name: "one", description: "x", inputSchema: { type: "object" } }],
+                nextCursor: "p2",
+              };
+            }
+            throw new Error("page exploded");
+          },
+        },
+        { tools: {} },
+      ),
+    ]);
+    const tools = (await agg.collectTools()) as Array<{ name: string }>;
+    expect(tools.map((t) => t.name)).toEqual(["gh.one"]);
+  });
+
+  it("keeps the first tool when namespaced names collide", async () => {
+    const cfg = cfgFor(["git", "git-hub"]);
+    cfg.namespaceSeparator = "-";
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "git",
+        {
+          listTools: async () => ({
+            tools: [{ name: "hub-echo", description: "from-git", inputSchema: { type: "object" } }],
+          }),
+        },
+        { tools: {} },
+      ),
+      fakeConn(
+        "git-hub",
+        {
+          listTools: async () => ({
+            tools: [{ name: "echo", description: "from-hub", inputSchema: { type: "object" } }],
+          }),
+        },
+        { tools: {} },
+      ),
+    ]);
+    const tools = (await agg.collectTools()) as Array<{ name: string; description?: string }>;
+    expect(tools.map((t) => t.name)).toEqual(["git-hub-echo"]);
+    expect(tools[0]?.description).toBe("from-git");
+    expect(agg.resolveTool("git-hub-echo")).toEqual({
+      upstreamId: "git",
+      originalName: "hub-echo",
+    });
+  });
+
+  it("hides a tool blocked by its original name", async () => {
+    const cfg = cfgFor(["gh"], { defaultAuth: "none", blockedTools: ["delete_repo"] });
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listTools: async () => ({
+            tools: [
+              { name: "delete_repo", description: "x", inputSchema: { type: "object" } },
+              { name: "search", description: "x", inputSchema: { type: "object" } },
+            ],
+          }),
+        },
+        { tools: {} },
+      ),
+    ]);
+    const tools = (await agg.collectTools()) as Array<{ name: string }>;
+    expect(tools.map((t) => t.name)).toEqual(["gh.search"]);
+  });
+
+  it("fans out prompts/list once when two callers overlap", async () => {
+    let calls = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const cfg = cfgFor(["gh"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listPrompts: async () => {
+            calls += 1;
+            await gate;
+            return { prompts: [{ name: "greet" }] };
+          },
+        },
+        { prompts: {} },
+      ),
+    ]);
+    const pending = Promise.all([agg.collectPrompts(), agg.collectPrompts()]);
+    release();
+    const [a, b] = await pending;
+    expect(calls).toBe(1);
+    expect(a).toBe(b);
   });
 
   it("swallows a tools/list failure that arrives after the timeout", async () => {

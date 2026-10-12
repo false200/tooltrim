@@ -22,21 +22,50 @@ export async function runTraceTail(opts: TraceTailOptions = {}): Promise<void> {
   const pretty = opts.pretty ?? Boolean(process.stdout.isTTY);
   const follow = opts.follow ?? true;
 
-  let position = 0;
-  try {
-    const s = await stat(target);
-    position = Math.max(0, s.size - 64 * 1024); // start at last 64KiB
-  } catch {
-    position = 0;
+  const fileExists = async () => {
+    try {
+      await stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!(await fileExists())) {
+    if (!follow) return;
+    process.stderr.write(`waiting for ${target}\n`);
+    while (!(await fileExists())) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
   }
 
+  let position = 0;
+  const initial = await stat(target);
+  position = Math.max(0, initial.size - 64 * 1024); // start at last 64KiB
+  let skipPartial = position > 0;
+
   const readChunk = async () => {
-    const s = await stat(target);
+    let s;
+    try {
+      s = await stat(target);
+    } catch {
+      return;
+    }
+    if (s.size < position) {
+      position = 0;
+      skipPartial = false;
+    }
     if (s.size <= position) return;
     await new Promise<void>((resolve) => {
       const stream = createReadStream(target, { start: position, end: s.size - 1 });
       const rl = createInterface({ input: stream });
-      rl.on("line", (line) => emitLine(line, pretty));
+      rl.on("line", (line) => {
+        if (skipPartial) {
+          skipPartial = false;
+          return;
+        }
+        emitLine(line, pretty);
+      });
       rl.on("close", () => resolve());
     });
     position = s.size;
