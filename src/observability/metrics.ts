@@ -2,6 +2,7 @@ import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from "prom
 import { createServer, type Server as HttpServer } from "node:http";
 import type { TooltrimConfig } from "../config/schema.js";
 import { child as childLogger } from "../logger.js";
+import { inboundRequestAllowed } from "../server/http.js";
 
 export interface MetricsServerHandle {
   registry: Registry;
@@ -88,6 +89,18 @@ export async function startMetrics(cfg: TooltrimConfig): Promise<MetricsServerHa
       return;
     }
     const url = new URL(req.url, "http://127.0.0.1");
+    if (
+      !inboundRequestAllowed({
+        hostHeader: req.headers.host,
+        originHeader: req.headers.origin,
+        bindHost: host,
+        port,
+      })
+    ) {
+      res.statusCode = 403;
+      res.end("forbidden");
+      return;
+    }
     if (url.pathname === metricsPath) {
       res.setHeader("Content-Type", registry.contentType);
       res.end(await registry.metrics());

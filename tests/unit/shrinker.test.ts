@@ -65,6 +65,19 @@ describe("Shrinker - description rules", () => {
     expect(out).not.toContain("<code>");
   });
 
+  it("keeps placeholders and still strips html tags", () => {
+    const s = new Shrinker(baseOpts);
+    const out = s.shrinkDescription(
+      'Pass <file path> and <owner>. See <a href="https://ex.com">docs</a>.',
+      160,
+    );
+    expect(out).toContain("<file path>");
+    expect(out).toContain("<owner>");
+    expect(out).toContain("docs");
+    expect(out).not.toContain("<a ");
+    expect(out).not.toContain("https://ex.com");
+  });
+
   it("does not cut a decimal number", () => {
     const s = new Shrinker({ ...baseOpts, maxDescriptionChars: 8 });
     const out = s.shrinkDescription("abcdef 10.5.", 8);

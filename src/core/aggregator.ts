@@ -25,6 +25,35 @@ const PROXY_INFO = { name: "tooltrim", version: VERSION };
 // shortcut: 50 pages, raise if a real catalog is larger
 const MAX_LIST_PAGES = 50;
 
+// shortcut: {var} matches slashes too, revisit if templates differ only by RFC 6570 reserved chars
+export function uriTemplateMatches(template: string, uri: string): boolean {
+  let pattern = "^";
+  for (let i = 0; i < template.length; i++) {
+    if (template[i] === "{") {
+      const end = template.indexOf("}", i);
+      if (end < 0) return false;
+      pattern += ".*";
+      i = end;
+      continue;
+    }
+    pattern += template[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`${pattern}$`).test(uri);
+}
+
+export function matchResourceTemplate(
+  templates: ReadonlyArray<{ upstreamId: string; uriTemplate: string }>,
+  uri: string,
+): string | undefined {
+  let best: { upstreamId: string; score: number } | undefined;
+  for (const t of templates) {
+    if (!uriTemplateMatches(t.uriTemplate, uri)) continue;
+    const score = t.uriTemplate.replace(/\{[^}]*\}/g, "").length;
+    if (!best || score > best.score) best = { upstreamId: t.upstreamId, score };
+  }
+  return best?.upstreamId;
+}
+
 /**
  * Follow an MCP list `nextCursor` until it stops.
  * A failure after the first page keeps the items already collected.
@@ -115,6 +144,9 @@ export class Aggregator {
   private readonly promptRoute = new Map<string, { upstreamId: string; original: string }>();
   /** uri -> upstreamId for resources (URIs are unique upstream-side; we keep first wins on collision). */
   private readonly resourceRoute = new Map<string, string>();
+  private resourceTemplates: Array<{ upstreamId: string; uriTemplate: string }> = [];
+  private resourcesListedAt = 0;
+  private templatesListedAt = 0;
   /** Short-lived cache for collectTools() to debounce redundant fan-out. */
   private toolsCache: { tools: unknown[]; ts: number } | null = null;
   private toolsInflight: Promise<unknown[]> | null = null;
@@ -137,7 +169,7 @@ export class Aggregator {
       capabilities: this.computePlausibleCapabilities(),
       instructions:
         "You're talking to Tooltrim, a proxy that aggregates multiple MCP servers into one. " +
-        "Tool names are namespaced as `<server>.<tool>`.",
+        `Tool names are namespaced as \`<server>${this.deps.cfg.namespaceSeparator}<tool>\`.`,
     });
     this.wireHandlers(server);
     return server;
@@ -239,11 +271,7 @@ export class Aggregator {
 
     server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
       const uri = req.params.uri;
-      let upstreamId = this.resourceRoute.get(uri);
-      if (!upstreamId) {
-        await this.collectResources();
-        upstreamId = this.resourceRoute.get(uri);
-      }
+      const upstreamId = await this.routeResource(uri);
       if (!upstreamId) {
         throw new Error(`resource "${uri}" not found in Tooltrim routing table`);
       }
@@ -397,6 +425,19 @@ export class Aggregator {
     );
   }
 
+  /**
+   * Concrete `resources/list` hits win. A miss falls through to a resource
+   * template (`file://{path}`), which is how filesystem servers expose reads.
+   */
+  async routeResource(uri: string): Promise<string | undefined> {
+    const fresh = (ts: number) => Date.now() - ts < this.TOOLS_CACHE_TTL_MS;
+    if (!fresh(this.resourcesListedAt)) await this.collectResources();
+    const listed = this.resourceRoute.get(uri);
+    if (listed) return listed;
+    if (!fresh(this.templatesListedAt)) await this.collectResourceTemplates();
+    return matchResourceTemplate(this.resourceTemplates, uri);
+  }
+
   async collectResources(): Promise<unknown[]> {
     if (this.resourcesInflight) return this.resourcesInflight;
     const pending = this.loadResources().finally(() => {
@@ -449,6 +490,7 @@ export class Aggregator {
     }
     this.resourceRoute.clear();
     for (const [k, v] of next) this.resourceRoute.set(k, v);
+    this.resourcesListedAt = Date.now();
     return out;
   }
 
@@ -476,15 +518,29 @@ export class Aggregator {
           });
           if (truncated) this.log.warn({ id, err }, listStop("resources/templates/list", err));
           return items
-            .filter((t) => this.deps.filter.isAllowed(this.namespace(id, t.name), "resource"))
-            .map((t) => ({ ...t, name: this.namespace(id, t.name) }));
+            .filter(
+              (t) =>
+                Boolean(t.uriTemplate) &&
+                this.deps.filter.isAllowed(this.namespace(id, t.name), "resource"),
+            )
+            .map((t) => ({
+              upstreamId: id,
+              uriTemplate: t.uriTemplate,
+              template: { ...t, name: this.namespace(id, t.name) },
+            }));
         } catch (err) {
           this.log.debug({ id, err: errMsg(err) }, "resourceTemplates/list unsupported");
           return [];
         }
       }),
     );
-    return groups.flat();
+    const flat = groups.flat();
+    this.resourceTemplates = flat.map(({ upstreamId, uriTemplate }) => ({
+      upstreamId,
+      uriTemplate,
+    }));
+    this.templatesListedAt = Date.now();
+    return flat.map((item) => item.template);
   }
 
   async collectPrompts(): Promise<unknown[]> {

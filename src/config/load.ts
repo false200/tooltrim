@@ -70,13 +70,23 @@ export function parseConfigText(text: string): unknown {
 
 const SECRET_KEY = /token|secret|password|authorization|api[-_]?key/i;
 
+function isSecretFlag(flag: string): boolean {
+  return /^-{1,2}[^\s=]*(?:token|secret|password|authorization|api[-_]?key)[^\s=]*$/i.test(flag);
+}
+
 export function redactSecrets(value: unknown): unknown {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>;
     const headerSecret = obj.type === "header";
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) {
-      if (typeof v === "string" && (SECRET_KEY.test(k) || (headerSecret && k === "value"))) {
+      if (k === "headers" && v && typeof v === "object" && !Array.isArray(v)) {
+        const headers: Record<string, unknown> = {};
+        for (const [hk, hv] of Object.entries(v as Record<string, unknown>)) {
+          headers[hk] = typeof hv === "string" && hv.length > 0 ? "***" : redactSecrets(hv);
+        }
+        out[k] = headers;
+      } else if (typeof v === "string" && (SECRET_KEY.test(k) || (headerSecret && k === "value"))) {
         out[k] = v.length > 0 ? "***" : v;
       } else {
         out[k] = redactSecrets(v);
@@ -84,13 +94,31 @@ export function redactSecrets(value: unknown): unknown {
     }
     return out;
   }
-  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (Array.isArray(value)) {
+    return value.map((item, i) => {
+      const prev = value[i - 1];
+      if (
+        typeof item === "string" &&
+        typeof prev === "string" &&
+        isSecretFlag(prev) &&
+        item.length > 0
+      ) {
+        return "***";
+      }
+      return redactSecrets(item);
+    });
+  }
   if (typeof value === "string") return redactSecretText(value);
   return value;
 }
 
 function redactSecretText(value: string): string {
   let out = value.replace(/:\/\/[^/\s:@]+:[^/\s@]+@/g, "://***@");
+  out = out.replace(
+    /([?&][^=&\s]*(?:token|secret|password|api[-_]?key)[^=&\s]*)=[^&\s]*/gi,
+    "$1=***",
+  );
+  out = out.replace(/(--?[^\s=]*(?:token|secret|password|api[-_]?key)[^\s=]*)=\S+/gi, "$1=***");
   for (const [key, envValue] of Object.entries(process.env)) {
     if (!envValue || envValue.length < 8 || !SECRET_KEY.test(key)) continue;
     if (out.includes(envValue)) out = out.split(envValue).join("***");
