@@ -87,7 +87,10 @@ async function startProxyCmd(configPath?: string): Promise<void> {
   const handle = await runProxy({ cfg: config });
   const log = getLogger();
 
+  let stopping = false;
   const shutdown = async (signal: string) => {
+    if (stopping) process.exit(1);
+    stopping = true;
     log.info({ signal }, "shutting down");
     try {
       await handle.close();

@@ -46,10 +46,11 @@ const BOILERPLATE_PHRASES: RegExp[] = [
   /\bthis\s+(tool|function|method|api|service|endpoint|operation)\s+/gi,
 ];
 
-// Closing tags, tags with attributes, and a short list of common tags.
+// Closing tags, tags that have an attribute (`<a href="...">`), and a short list of
+// common tags. A space alone is not enough: `<file path>` is a placeholder.
 // `List<User>` has none of those, so type parameters stay intact.
 const HTML_TAG =
-  /<\/?[A-Za-z][^>]*\s[^>]*>|<\/[A-Za-z][^>]*>|<[A-Za-z][^>]*\/>|<(?:br|hr|p|li|ul|ol|div|span|code|pre|em|strong|b|i|a|img|blockquote|h[1-6])>/gi;
+  /<\/?[A-Za-z][^>]*\s[^=>]*=[^>]*>|<\/[A-Za-z][^>]*>|<[A-Za-z][^>]*\/>|<(?:br|hr|p|li|ul|ol|div|span|code|pre|em|strong|b|i|a|img|blockquote|h[1-6])>/gi;
 
 const FILLER_PHRASES: Array<[RegExp, string]> = [
   [/\bplease\s+/gi, ""],

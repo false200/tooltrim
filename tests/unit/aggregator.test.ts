@@ -1,6 +1,10 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { describe, expect, it } from "vitest";
-import { Aggregator } from "../../src/core/aggregator.js";
+import {
+  Aggregator,
+  matchResourceTemplate,
+  uriTemplateMatches,
+} from "../../src/core/aggregator.js";
 import { ToolFilter } from "../../src/core/filter.js";
 import { Shrinker } from "../../src/core/shrinker.js";
 import { tooltrimConfigSchema, type TooltrimConfig } from "../../src/config/schema.js";
@@ -87,6 +91,99 @@ describe("Aggregator listings", () => {
     expect(resources).toHaveLength(1);
     expect(resources[0]?.name).toBe("a.readme");
     expect(resources[0]?.description).toBe("from-a");
+  });
+
+  it("routes an unlisted uri through the most specific template", async () => {
+    const cfg = cfgFor(["wide", "fs"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "wide",
+        {
+          listResources: async () => ({ resources: [] }),
+          listResourceTemplates: async () => ({
+            resourceTemplates: [{ name: "any", uriTemplate: "file://{path}" }],
+          }),
+        },
+        { resources: {} },
+      ),
+      fakeConn(
+        "fs",
+        {
+          listResources: async () => ({ resources: [] }),
+          listResourceTemplates: async () => ({
+            resourceTemplates: [{ name: "file", uriTemplate: "file:///tmp/{name}" }],
+          }),
+        },
+        { resources: {} },
+      ),
+    ]);
+    expect(await agg.routeResource("file:///tmp/a")).toBe("fs");
+    expect(await agg.routeResource("file:///etc/passwd")).toBe("wide");
+    expect(await agg.routeResource("mem://nope")).toBeUndefined();
+  });
+
+  it("does not route a read through a denied template", async () => {
+    const cfg = tooltrimConfigSchema.parse({
+      servers: { secret: { transport: "stdio", command: ["node"] } },
+      filters: { deny: ["secret.*"] },
+      shrink: { mode: "off", cachePath: "" },
+      observability: { trace: { sink: "off" } },
+      logLevel: "silent",
+    });
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "secret",
+        {
+          listResources: async () => ({ resources: [] }),
+          listResourceTemplates: async () => ({
+            resourceTemplates: [{ name: "keys", uriTemplate: "secret://{id}" }],
+          }),
+        },
+        { resources: {} },
+      ),
+    ]);
+    expect(await agg.routeResource("secret://abc")).toBeUndefined();
+  });
+
+  it("prefers a listed resource over a template", async () => {
+    const cfg = cfgFor(["a", "b"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "a",
+        {
+          listResources: async () => ({
+            resources: [{ uri: "mem://hello", name: "hello" }],
+          }),
+          listResourceTemplates: async () => ({ resourceTemplates: [] }),
+        },
+        { resources: {} },
+      ),
+      fakeConn(
+        "b",
+        {
+          listResources: async () => ({ resources: [] }),
+          listResourceTemplates: async () => ({
+            resourceTemplates: [{ name: "mem", uriTemplate: "mem://{id}" }],
+          }),
+        },
+        { resources: {} },
+      ),
+    ]);
+    expect(await agg.routeResource("mem://hello")).toBe("a");
+  });
+
+  it("matches templates without treating dots as wildcards", () => {
+    expect(uriTemplateMatches("https://example.com/{id}", "https://example.com/a")).toBe(true);
+    expect(uriTemplateMatches("https://example.com/{id}", "https://exampleXcom/a")).toBe(false);
+    expect(
+      matchResourceTemplate(
+        [
+          { upstreamId: "wide", uriTemplate: "{path}" },
+          { upstreamId: "fs", uriTemplate: "file://{path}" },
+        ],
+        "file:///tmp/a",
+      ),
+    ).toBe("fs");
   });
 
   it("filters resource templates with the resource rules", async () => {

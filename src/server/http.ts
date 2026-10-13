@@ -13,6 +13,51 @@ export interface InboundHttpHandle {
 }
 
 /**
+ * Block a browser page that DNS-rebinds onto this port. The page's Origin
+ * stays the attacker's site, and a loopback bind also requires a loopback
+ * Host (browsers cannot set either header). Not authentication.
+ */
+export function inboundRequestAllowed(opts: {
+  hostHeader: string | undefined;
+  originHeader: string | undefined;
+  bindHost: string;
+  port: number;
+}): boolean {
+  if (!originAllowed(opts.originHeader)) return false;
+  if (!loopbackBind(opts.bindHost)) return true;
+  return loopbackHost(opts.hostHeader, opts.port);
+}
+
+function originAllowed(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (origin === "null") return false;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return true;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return true;
+  const host = url.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function loopbackBind(bindHost: string): boolean {
+  const bind = bindHost.trim().toLowerCase();
+  return bind === "127.0.0.1" || bind === "localhost" || bind === "::1" || bind === "[::1]";
+}
+
+function loopbackHost(hostHeader: string | undefined, port: number): boolean {
+  if (!hostHeader) return false;
+  const header = hostHeader.trim().toLowerCase();
+  for (const name of ["localhost", "127.0.0.1", "[::1]"]) {
+    if (header === `${name}:${port}`) return true;
+    if ((port === 80 || port === 443) && header === name) return true;
+  }
+  return false;
+}
+
+/**
  * Inbound Streamable HTTP transport. Stateless by default per the 2026 MCP
  * roadmap (no in-memory session affinity). When `inbound.http.sessions` is
  * a Redis URL the v0.1 implementation still falls back to stateless and
@@ -44,6 +89,19 @@ export async function startHttpServer(args: {
     // Fixed base: `host` may be an IPv6 address, which is not a valid URL host bare.
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
+    if (
+      !inboundRequestAllowed({
+        hostHeader: req.headers.host,
+        originHeader: req.headers.origin,
+        bindHost: host,
+        port: boundPort,
+      })
+    ) {
+      res.statusCode = 403;
+      res.end("forbidden");
+      return;
+    }
+
     if (url.pathname === "/healthz") {
       const upstreams = [...upstream.connections.values()].map((c) => ({
         id: c.id,
@@ -61,7 +119,8 @@ export async function startHttpServer(args: {
       return;
     }
 
-    const auth = typeof req.headers["authorization"] === "string" ? req.headers["authorization"] : undefined;
+    const auth =
+      typeof req.headers["authorization"] === "string" ? req.headers["authorization"] : undefined;
     const identity = unsafeDecodeBearer(auth);
 
     // Stateless: fresh transport AND fresh Server instance per request, per
