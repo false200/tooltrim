@@ -1,3 +1,4 @@
+import { redactSecrets } from "../config/load.js";
 import type { TooltrimConfig } from "../config/schema.js";
 import { child as childLogger } from "../logger.js";
 import { VERSION } from "../version.js";
@@ -31,9 +32,8 @@ export async function startOtel(cfg: TooltrimConfig): Promise<OtelHandle | null>
     const { NodeSDK } = await import("@opentelemetry/sdk-node");
     const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
     const { resourceFromAttributes } = await import("@opentelemetry/resources");
-    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
-      "@opentelemetry/semantic-conventions"
-    );
+    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } =
+      await import("@opentelemetry/semantic-conventions");
 
     const sdk = new NodeSDK({
       resource: resourceFromAttributes({
@@ -43,7 +43,7 @@ export async function startOtel(cfg: TooltrimConfig): Promise<OtelHandle | null>
       traceExporter: new OTLPTraceExporter({ url: otlpTracesUrl(endpoint) }),
     });
     sdk.start();
-    log.info({ endpoint }, "OpenTelemetry SDK started");
+    log.info({ endpoint: redactSecrets(endpoint) }, "OpenTelemetry SDK started");
 
     return {
       shutdown: async () => {

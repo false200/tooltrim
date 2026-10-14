@@ -125,6 +125,8 @@ interface ToolRouteEntry {
   originalName: string;
 }
 
+type ListFlight = { key: string; pending: Promise<unknown[]> };
+
 /**
  * Routes every list/call request to the right upstream. Always uses
  * `setRequestHandler` on the low-level `Server` (not `McpServer.registerTool`)
@@ -140,19 +142,27 @@ interface ToolRouteEntry {
 export class Aggregator {
   private readonly deps: AggregatorDeps;
   private readonly log: Logger;
-  private readonly toolRoute = new Map<string, ToolRouteEntry>();
+  private toolRoute = new Map<string, ToolRouteEntry>();
   private readonly promptRoute = new Map<string, { upstreamId: string; original: string }>();
   /** uri -> upstreamId for resources (URIs are unique upstream-side; we keep first wins on collision). */
   private readonly resourceRoute = new Map<string, string>();
   private resourceTemplates: Array<{ upstreamId: string; uriTemplate: string }> = [];
   private resourcesListedAt = 0;
   private templatesListedAt = 0;
-  /** Short-lived cache for collectTools() to debounce redundant fan-out. */
-  private toolsCache: { tools: unknown[]; ts: number } | null = null;
-  private toolsInflight: Promise<unknown[]> | null = null;
-  private promptsInflight: Promise<unknown[]> | null = null;
-  private resourcesInflight: Promise<unknown[]> | null = null;
-  private templatesInflight: Promise<unknown[]> | null = null;
+  /** Authorization header that the installed route table belongs to. "" means the caller sent none. */
+  private toolsKey = "";
+  private promptsKey = "";
+  private resourcesKey = "";
+  private templatesKey = "";
+  /** Per-token tools/list cache. One slot would hand the next caller the previous catalog. */
+  private toolSnaps = new Map<
+    string,
+    { tools: unknown[]; route: Map<string, ToolRouteEntry>; ts: number }
+  >();
+  private toolsInflight: ListFlight | null = null;
+  private promptsInflight: ListFlight | null = null;
+  private resourcesInflight: ListFlight | null = null;
+  private templatesInflight: ListFlight | null = null;
   private readonly TOOLS_CACHE_TTL_MS = 2000;
 
   constructor(deps: AggregatorDeps) {
@@ -197,13 +207,11 @@ export class Aggregator {
 
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const name = req.params.name;
-      let route = this.toolRoute.get(name);
-      if (!route) {
-        // The client may have skipped tools/list (or the route table was
-        // cleared since the last list). Refresh and try once more.
+      // The route table belongs to whoever listed last. Another caller's token gets its own list.
+      if (this.toolsKey !== this.authKey() || !this.toolRoute.has(name)) {
         await this.collectTools();
-        route = this.toolRoute.get(name);
       }
+      const route = this.toolRoute.get(name);
       if (!route) {
         throw new Error(`tool "${name}" not found in Tooltrim routing table`);
       }
@@ -289,11 +297,10 @@ export class Aggregator {
 
     server.setRequestHandler(GetPromptRequestSchema, async (req) => {
       const name = req.params.name;
-      let route = this.promptRoute.get(name);
-      if (!route) {
+      if (this.promptsKey !== this.authKey() || !this.promptRoute.has(name)) {
         await this.collectPrompts();
-        route = this.promptRoute.get(name);
       }
+      const route = this.promptRoute.get(name);
       if (!route) {
         throw new Error(`prompt "${name}" not found in Tooltrim routing table`);
       }
@@ -313,15 +320,21 @@ export class Aggregator {
    * and return the merged list.
    */
   async collectTools(): Promise<unknown[]> {
-    if (this.toolsCache && Date.now() - this.toolsCache.ts < this.TOOLS_CACHE_TTL_MS) {
-      return this.toolsCache.tools;
+    const key = this.authKey();
+    const hit = this.toolSnaps.get(key);
+    if (hit && Date.now() - hit.ts < this.TOOLS_CACHE_TTL_MS) {
+      this.toolRoute = hit.route;
+      this.toolsKey = key;
+      return hit.tools;
     }
-    if (this.toolsInflight) return this.toolsInflight;
-    const pending = this.loadTools().finally(() => {
-      this.toolsInflight = null;
-    });
-    this.toolsInflight = pending;
-    return pending;
+    return this.share(
+      () => this.toolsInflight,
+      (slot) => {
+        this.toolsInflight = slot;
+      },
+      key,
+      () => this.loadTools(),
+    );
   }
 
   private async loadTools(): Promise<unknown[]> {
@@ -406,9 +419,11 @@ export class Aggregator {
       nextRoute.set(item.namespaced, item.route);
       out.push(item.tool);
     }
-    this.toolRoute.clear();
-    for (const [k, v] of nextRoute) this.toolRoute.set(k, v);
-    this.toolsCache = { tools: out, ts: Date.now() };
+    const route = new Map(nextRoute);
+    this.toolRoute = route;
+    const key = this.authKey();
+    this.toolsKey = key;
+    this.rememberTools(key, out, route);
     return out;
   }
 
@@ -430,21 +445,25 @@ export class Aggregator {
    * template (`file://{path}`), which is how filesystem servers expose reads.
    */
   async routeResource(uri: string): Promise<string | undefined> {
-    const fresh = (ts: number) => Date.now() - ts < this.TOOLS_CACHE_TTL_MS;
-    if (!fresh(this.resourcesListedAt)) await this.collectResources();
+    const key = this.authKey();
+    const fresh = (ts: number, listedKey: string) =>
+      listedKey === key && Date.now() - ts < this.TOOLS_CACHE_TTL_MS;
+    if (!fresh(this.resourcesListedAt, this.resourcesKey)) await this.collectResources();
     const listed = this.resourceRoute.get(uri);
     if (listed) return listed;
-    if (!fresh(this.templatesListedAt)) await this.collectResourceTemplates();
+    if (!fresh(this.templatesListedAt, this.templatesKey)) await this.collectResourceTemplates();
     return matchResourceTemplate(this.resourceTemplates, uri);
   }
 
   async collectResources(): Promise<unknown[]> {
-    if (this.resourcesInflight) return this.resourcesInflight;
-    const pending = this.loadResources().finally(() => {
-      this.resourcesInflight = null;
-    });
-    this.resourcesInflight = pending;
-    return pending;
+    return this.share(
+      () => this.resourcesInflight,
+      (slot) => {
+        this.resourcesInflight = slot;
+      },
+      this.authKey(),
+      () => this.loadResources(),
+    );
   }
 
   private async loadResources(): Promise<unknown[]> {
@@ -490,17 +509,20 @@ export class Aggregator {
     }
     this.resourceRoute.clear();
     for (const [k, v] of next) this.resourceRoute.set(k, v);
+    this.resourcesKey = this.authKey();
     this.resourcesListedAt = Date.now();
     return out;
   }
 
   async collectResourceTemplates(): Promise<unknown[]> {
-    if (this.templatesInflight) return this.templatesInflight;
-    const pending = this.loadResourceTemplates().finally(() => {
-      this.templatesInflight = null;
-    });
-    this.templatesInflight = pending;
-    return pending;
+    return this.share(
+      () => this.templatesInflight,
+      (slot) => {
+        this.templatesInflight = slot;
+      },
+      this.authKey(),
+      () => this.loadResourceTemplates(),
+    );
   }
 
   private async loadResourceTemplates(): Promise<unknown[]> {
@@ -539,17 +561,20 @@ export class Aggregator {
       upstreamId,
       uriTemplate,
     }));
+    this.templatesKey = this.authKey();
     this.templatesListedAt = Date.now();
     return flat.map((item) => item.template);
   }
 
   async collectPrompts(): Promise<unknown[]> {
-    if (this.promptsInflight) return this.promptsInflight;
-    const pending = this.loadPrompts().finally(() => {
-      this.promptsInflight = null;
-    });
-    this.promptsInflight = pending;
-    return pending;
+    return this.share(
+      () => this.promptsInflight,
+      (slot) => {
+        this.promptsInflight = slot;
+      },
+      this.authKey(),
+      () => this.loadPrompts(),
+    );
   }
 
   private async loadPrompts(): Promise<unknown[]> {
@@ -602,7 +627,43 @@ export class Aggregator {
     }
     this.promptRoute.clear();
     for (const [k, v] of next) this.promptRoute.set(k, v);
+    this.promptsKey = this.authKey();
     return out;
+  }
+
+  private authKey(): string {
+    return getInboundContext()?.authorization ?? "";
+  }
+
+  // shortcut: 8 catalogs, raise if many distinct tokens list together
+  private rememberTools(key: string, tools: unknown[], route: Map<string, ToolRouteEntry>): void {
+    this.toolSnaps.delete(key);
+    this.toolSnaps.set(key, { tools, route, ts: Date.now() });
+    while (this.toolSnaps.size > 8) {
+      const oldest = this.toolSnaps.keys().next().value;
+      if (oldest === undefined) break;
+      this.toolSnaps.delete(oldest);
+    }
+  }
+
+  // Same Authorization shares one list. A different token waits, then loads its own.
+  private async share(
+    get: () => ListFlight | null,
+    set: (slot: ListFlight | null) => void,
+    key: string,
+    load: () => Promise<unknown[]>,
+  ): Promise<unknown[]> {
+    const current = get();
+    if (current?.key === key) return current.pending;
+    if (current) {
+      await current.pending.catch(() => undefined);
+      return this.share(get, set, key, load);
+    }
+    const pending = load().finally(() => {
+      if (get()?.pending === pending) set(null);
+    });
+    set({ key, pending });
+    return pending;
   }
 
   /**

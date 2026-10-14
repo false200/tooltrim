@@ -9,7 +9,11 @@ import { ToolFilter } from "../../src/core/filter.js";
 import { Shrinker } from "../../src/core/shrinker.js";
 import { tooltrimConfigSchema, type TooltrimConfig } from "../../src/config/schema.js";
 import type { UpstreamConnection, UpstreamStatus } from "../../src/upstream/types.js";
-import type { UpstreamManager } from "../../src/upstream/manager.js";
+import {
+  getInboundContext,
+  runWithInboundContext,
+  type UpstreamManager,
+} from "../../src/upstream/manager.js";
 
 function cfgFor(ids: string[], policy?: TooltrimConfig["policy"]): TooltrimConfig {
   return tooltrimConfigSchema.parse({
@@ -417,5 +421,115 @@ describe("Aggregator listings", () => {
     await expect(agg.collectTools()).resolves.toEqual([]);
     rejectList(new Error("late failure"));
     await new Promise((r) => setTimeout(r, 20));
+  });
+
+  it("does not reuse another caller's cached tool list", async () => {
+    const cfg = cfgFor(["up"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "up",
+        {
+          listTools: async () => {
+            const name = getInboundContext()?.authorization === "Bearer B" ? "bee" : "ay";
+            return { tools: [{ name, description: "x", inputSchema: { type: "object" } }] };
+          },
+        },
+        { tools: {} },
+      ),
+    ]);
+    const a = (await runWithInboundContext({ authorization: "Bearer A" }, () =>
+      agg.collectTools(),
+    )) as Array<{ name: string }>;
+    const b = (await runWithInboundContext({ authorization: "Bearer B" }, () =>
+      agg.collectTools(),
+    )) as Array<{ name: string }>;
+    expect(a.map((t) => t.name)).toEqual(["up.ay"]);
+    expect(b.map((t) => t.name)).toEqual(["up.bee"]);
+  });
+
+  it("drops the oldest cached tool catalog past 8 tokens", async () => {
+    let calls = 0;
+    const cfg = cfgFor(["up"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "up",
+        {
+          listTools: async () => {
+            calls += 1;
+            const name = getInboundContext()?.authorization ?? "none";
+            return { tools: [{ name, description: "x", inputSchema: { type: "object" } }] };
+          },
+        },
+        { tools: {} },
+      ),
+    ]);
+    for (let i = 0; i < 8; i++) {
+      await runWithInboundContext({ authorization: `Bearer ${i}` }, () => agg.collectTools());
+    }
+    await runWithInboundContext({ authorization: "Bearer 0" }, () => agg.collectTools());
+    expect(calls).toBe(8);
+    await runWithInboundContext({ authorization: "Bearer 8" }, () => agg.collectTools());
+    await runWithInboundContext({ authorization: "Bearer 0" }, () => agg.collectTools());
+    expect(calls).toBe(10);
+  });
+
+  it("does not share an in-flight resources/list across tokens", async () => {
+    let started = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const cfg = cfgFor(["up"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "up",
+        {
+          listResources: async () => {
+            started += 1;
+            if (started === 1) await gate;
+            const uri = getInboundContext()?.authorization === "Bearer B" ? "mem://b" : "mem://a";
+            return { resources: [{ uri, name: "n" }] };
+          },
+        },
+        { resources: {} },
+      ),
+    ]);
+    const pendingA = runWithInboundContext({ authorization: "Bearer A" }, () =>
+      agg.collectResources(),
+    );
+    const pendingB = runWithInboundContext({ authorization: "Bearer B" }, () =>
+      agg.collectResources(),
+    );
+    release();
+    const [a, b] = (await Promise.all([pendingA, pendingB])) as [
+      Array<{ uri: string }>,
+      Array<{ uri: string }>,
+    ];
+    expect(a.map((r) => r.uri)).toEqual(["mem://a"]);
+    expect(b.map((r) => r.uri)).toEqual(["mem://b"]);
+    expect(started).toBe(2);
+  });
+
+  it("does not route a read from another caller's resource list", async () => {
+    const cfg = cfgFor(["up"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "up",
+        {
+          listResources: async () => {
+            const uri = getInboundContext()?.authorization === "Bearer B" ? "mem://b" : "mem://a";
+            return { resources: [{ uri, name: "n" }] };
+          },
+          listResourceTemplates: async () => ({ resourceTemplates: [] }),
+        },
+        { resources: {} },
+      ),
+    ]);
+    await runWithInboundContext({ authorization: "Bearer A" }, () => agg.collectResources());
+    expect(
+      await runWithInboundContext({ authorization: "Bearer B" }, () =>
+        agg.routeResource("mem://a"),
+      ),
+    ).toBeUndefined();
   });
 });
