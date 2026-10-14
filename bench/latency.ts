@@ -117,7 +117,8 @@ async function openDirectEverythingClient(): Promise<{ client: Client }> {
   const transport = new StdioClientTransport({
     command,
     args,
-    env: { ...(process.env as Record<string, string>) },
+    // SDK merges PATH/HOME. Copying process.env would leak API keys to printEnv.
+    env: everything.env,
     stderr: "pipe",
   });
   const client = new Client(

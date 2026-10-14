@@ -418,4 +418,79 @@ describe("Aggregator listings", () => {
     rejectList(new Error("late failure"));
     await new Promise((r) => setTimeout(r, 20));
   });
+
+  it("passes upstreamTimeoutMs through to tools/list", async () => {
+    const cfg = cfgFor(["gh"]);
+    cfg.upstreamTimeoutMs = 120_000;
+    let seen: unknown;
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listTools: async (_params, options) => {
+            seen = options;
+            return { tools: [] };
+          },
+        },
+        { tools: {} },
+      ),
+    ]);
+    await agg.collectTools();
+    expect(seen).toEqual({ timeout: 120_000 });
+  });
+
+  it("does not let the SDK stop a tool call at 60s", async () => {
+    const cfg = cfgFor(["gh"]);
+    let callOpts: unknown;
+    let readOpts: unknown;
+    let promptOpts: unknown;
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "gh",
+        {
+          listTools: async () => ({
+            tools: [{ name: "echo", description: "x", inputSchema: { type: "object" } }],
+          }),
+          listPrompts: async () => ({ prompts: [{ name: "greet" }] }),
+          listResources: async () => ({ resources: [{ uri: "mem://hello", name: "hello" }] }),
+          callTool: async (_params, _schema, options) => {
+            callOpts = options;
+            return { content: [{ type: "text", text: "ok" }] };
+          },
+          readResource: async (_params, options) => {
+            readOpts = options;
+            return { contents: [{ uri: "mem://hello", text: "ok" }] };
+          },
+          getPrompt: async (_params, options) => {
+            promptOpts = options;
+            return { messages: [{ role: "user", content: { type: "text", text: "hi" } }] };
+          },
+        },
+        { tools: {}, prompts: {}, resources: {} },
+      ),
+    ]);
+    await agg.collectTools();
+    await agg.collectPrompts();
+    await agg.collectResources();
+    const server = agg.createServer() as unknown as {
+      _requestHandlers: Map<string, (req: unknown, extra: unknown) => Promise<unknown>>;
+    };
+    const extra = { signal: new AbortController().signal };
+    await server._requestHandlers.get("tools/call")!(
+      { method: "tools/call", params: { name: "gh.echo", arguments: {} } },
+      extra,
+    );
+    await server._requestHandlers.get("resources/read")!(
+      { method: "resources/read", params: { uri: "mem://hello" } },
+      extra,
+    );
+    await server._requestHandlers.get("prompts/get")!(
+      { method: "prompts/get", params: { name: "gh.greet" } },
+      extra,
+    );
+    for (const opts of [callOpts, readOpts, promptOpts]) {
+      expect(opts).toMatchObject({ timeout: expect.any(Number), signal: extra.signal });
+      expect((opts as { timeout: number }).timeout).toBeGreaterThan(60_000);
+    }
+  });
 });
