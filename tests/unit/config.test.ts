@@ -90,6 +90,7 @@ describe("config schema", () => {
           name: "visible",
           auth: { type: "header", name: "Authorization", value: "ghp_literal" },
           url: "https://user:s3cret@example.com/mcp?api_key=abcd1234&x=1",
+          sessions: "redis://:s3cret@127.0.0.1:6379/0",
           command: ["--token", "super-secret-value", "--token=ghp_literalvalue", "keep-me"],
           headers: { "X-Custom-Auth": "not-a-standard-name", Accept: "application/json" },
         }),
@@ -99,6 +100,7 @@ describe("config schema", () => {
         name: "visible",
         auth: { type: "header", name: "Authorization", value: "***" },
         url: "https://***@example.com/mcp?api_key=***&x=1",
+        sessions: "redis://***@127.0.0.1:6379/0",
         command: ["--token", "***", "--token=***", "keep-me"],
         headers: { "X-Custom-Auth": "***", Accept: "***" },
       });

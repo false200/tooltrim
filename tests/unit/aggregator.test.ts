@@ -9,7 +9,11 @@ import { ToolFilter } from "../../src/core/filter.js";
 import { Shrinker } from "../../src/core/shrinker.js";
 import { tooltrimConfigSchema, type TooltrimConfig } from "../../src/config/schema.js";
 import type { UpstreamConnection, UpstreamStatus } from "../../src/upstream/types.js";
-import type { UpstreamManager } from "../../src/upstream/manager.js";
+import {
+  getInboundContext,
+  runWithInboundContext,
+  type UpstreamManager,
+} from "../../src/upstream/manager.js";
 
 function cfgFor(ids: string[], policy?: TooltrimConfig["policy"]): TooltrimConfig {
   return tooltrimConfigSchema.parse({
@@ -419,78 +423,113 @@ describe("Aggregator listings", () => {
     await new Promise((r) => setTimeout(r, 20));
   });
 
-  it("passes upstreamTimeoutMs through to tools/list", async () => {
-    const cfg = cfgFor(["gh"]);
-    cfg.upstreamTimeoutMs = 120_000;
-    let seen: unknown;
+  it("does not reuse another caller's cached tool list", async () => {
+    const cfg = cfgFor(["up"]);
     const agg = aggregator(cfg, [
       fakeConn(
-        "gh",
+        "up",
         {
-          listTools: async (_params, options) => {
-            seen = options;
-            return { tools: [] };
+          listTools: async () => {
+            const name = getInboundContext()?.authorization === "Bearer B" ? "bee" : "ay";
+            return { tools: [{ name, description: "x", inputSchema: { type: "object" } }] };
           },
         },
         { tools: {} },
       ),
     ]);
-    await agg.collectTools();
-    expect(seen).toEqual({ timeout: 120_000 });
+    const a = (await runWithInboundContext({ authorization: "Bearer A" }, () =>
+      agg.collectTools(),
+    )) as Array<{ name: string }>;
+    const b = (await runWithInboundContext({ authorization: "Bearer B" }, () =>
+      agg.collectTools(),
+    )) as Array<{ name: string }>;
+    expect(a.map((t) => t.name)).toEqual(["up.ay"]);
+    expect(b.map((t) => t.name)).toEqual(["up.bee"]);
   });
 
-  it("does not let the SDK stop a tool call at 60s", async () => {
-    const cfg = cfgFor(["gh"]);
-    let callOpts: unknown;
-    let readOpts: unknown;
-    let promptOpts: unknown;
+  it("drops the oldest cached tool catalog past 8 tokens", async () => {
+    let calls = 0;
+    const cfg = cfgFor(["up"]);
     const agg = aggregator(cfg, [
       fakeConn(
-        "gh",
+        "up",
         {
-          listTools: async () => ({
-            tools: [{ name: "echo", description: "x", inputSchema: { type: "object" } }],
-          }),
-          listPrompts: async () => ({ prompts: [{ name: "greet" }] }),
-          listResources: async () => ({ resources: [{ uri: "mem://hello", name: "hello" }] }),
-          callTool: async (_params, _schema, options) => {
-            callOpts = options;
-            return { content: [{ type: "text", text: "ok" }] };
-          },
-          readResource: async (_params, options) => {
-            readOpts = options;
-            return { contents: [{ uri: "mem://hello", text: "ok" }] };
-          },
-          getPrompt: async (_params, options) => {
-            promptOpts = options;
-            return { messages: [{ role: "user", content: { type: "text", text: "hi" } }] };
+          listTools: async () => {
+            calls += 1;
+            const name = getInboundContext()?.authorization ?? "none";
+            return { tools: [{ name, description: "x", inputSchema: { type: "object" } }] };
           },
         },
-        { tools: {}, prompts: {}, resources: {} },
+        { tools: {} },
       ),
     ]);
-    await agg.collectTools();
-    await agg.collectPrompts();
-    await agg.collectResources();
-    const server = agg.createServer() as unknown as {
-      _requestHandlers: Map<string, (req: unknown, extra: unknown) => Promise<unknown>>;
-    };
-    const extra = { signal: new AbortController().signal };
-    await server._requestHandlers.get("tools/call")!(
-      { method: "tools/call", params: { name: "gh.echo", arguments: {} } },
-      extra,
-    );
-    await server._requestHandlers.get("resources/read")!(
-      { method: "resources/read", params: { uri: "mem://hello" } },
-      extra,
-    );
-    await server._requestHandlers.get("prompts/get")!(
-      { method: "prompts/get", params: { name: "gh.greet" } },
-      extra,
-    );
-    for (const opts of [callOpts, readOpts, promptOpts]) {
-      expect(opts).toMatchObject({ timeout: expect.any(Number), signal: extra.signal });
-      expect((opts as { timeout: number }).timeout).toBeGreaterThan(60_000);
+    for (let i = 0; i < 8; i++) {
+      await runWithInboundContext({ authorization: `Bearer ${i}` }, () => agg.collectTools());
     }
+    await runWithInboundContext({ authorization: "Bearer 0" }, () => agg.collectTools());
+    expect(calls).toBe(8);
+    await runWithInboundContext({ authorization: "Bearer 8" }, () => agg.collectTools());
+    await runWithInboundContext({ authorization: "Bearer 0" }, () => agg.collectTools());
+    expect(calls).toBe(10);
+  });
+
+  it("does not share an in-flight resources/list across tokens", async () => {
+    let started = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const cfg = cfgFor(["up"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "up",
+        {
+          listResources: async () => {
+            started += 1;
+            if (started === 1) await gate;
+            const uri = getInboundContext()?.authorization === "Bearer B" ? "mem://b" : "mem://a";
+            return { resources: [{ uri, name: "n" }] };
+          },
+        },
+        { resources: {} },
+      ),
+    ]);
+    const pendingA = runWithInboundContext({ authorization: "Bearer A" }, () =>
+      agg.collectResources(),
+    );
+    const pendingB = runWithInboundContext({ authorization: "Bearer B" }, () =>
+      agg.collectResources(),
+    );
+    release();
+    const [a, b] = (await Promise.all([pendingA, pendingB])) as [
+      Array<{ uri: string }>,
+      Array<{ uri: string }>,
+    ];
+    expect(a.map((r) => r.uri)).toEqual(["mem://a"]);
+    expect(b.map((r) => r.uri)).toEqual(["mem://b"]);
+    expect(started).toBe(2);
+  });
+
+  it("does not route a read from another caller's resource list", async () => {
+    const cfg = cfgFor(["up"]);
+    const agg = aggregator(cfg, [
+      fakeConn(
+        "up",
+        {
+          listResources: async () => {
+            const uri = getInboundContext()?.authorization === "Bearer B" ? "mem://b" : "mem://a";
+            return { resources: [{ uri, name: "n" }] };
+          },
+          listResourceTemplates: async () => ({ resourceTemplates: [] }),
+        },
+        { resources: {} },
+      ),
+    ]);
+    await runWithInboundContext({ authorization: "Bearer A" }, () => agg.collectResources());
+    expect(
+      await runWithInboundContext({ authorization: "Bearer B" }, () =>
+        agg.routeResource("mem://a"),
+      ),
+    ).toBeUndefined();
   });
 });

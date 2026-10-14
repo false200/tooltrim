@@ -113,7 +113,8 @@ export function redactSecrets(value: unknown): unknown {
 }
 
 function redactSecretText(value: string): string {
-  let out = value.replace(/:\/\/[^/\s:@]+:[^/\s@]+@/g, "://***@");
+  // `*` so `redis://:password@host` is covered; `+` required a username.
+  let out = value.replace(/:\/\/[^/\s:@]*:[^/\s@]+@/g, "://***@");
   out = out.replace(
     /([?&][^=&\s]*(?:token|secret|password|api[-_]?key)[^=&\s]*)=[^&\s]*/gi,
     "$1=***",

@@ -134,19 +134,15 @@ export class Shrinker {
 
   shrinkDescription(input: string, maxChars: number): string {
     if (this.opts.mode === "off") return input;
-    const cacheKey = `desc:${this.opts.mode}:${maxChars}:${this.hash(input)}`;
-    const cached = this.cache.entries[cacheKey];
-    if (cached !== undefined) return cached;
-
     if (this.opts.mode === "llm") {
       // A miss must stay a miss. Caching the original would hide a later offline fill.
+      const cacheKey = `desc:${this.opts.mode}:${maxChars}:${this.hash(input)}`;
+      const cached = this.cache.entries[cacheKey];
+      if (cached !== undefined) return cached;
       return input;
     }
-    const result = this.applyRules(input, maxChars);
-
-    this.cache.entries[cacheKey] = result;
-    this.cacheDirty = true;
-    return result;
+    // Rules are pure. A disk cache would keep the previous rules after an upgrade.
+    return this.applyRules(input, maxChars);
   }
 
   private applyRules(input: string, maxChars: number): string {
