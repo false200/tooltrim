@@ -256,7 +256,8 @@ export class Shrinker {
     let nextId = Object.keys(defs).length;
     for (const [hash, info] of counts) {
       if (info.count >= 2) {
-        const id = `mdShared${nextId++}`;
+        let id = `mdShared${nextId++}`;
+        while (Object.hasOwn(defs, id)) id = `mdShared${nextId++}`;
         defs[id] = JSON.parse(JSON.stringify(info.sample)) as unknown;
         refMap.set(hash, id);
       }

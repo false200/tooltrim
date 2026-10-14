@@ -202,6 +202,26 @@ describe("Shrinker - schema dedup", () => {
     expect(out.$defs.Existing.properties.z.type).toBe("string");
   });
 
+  it("does not overwrite an existing $defs entry named mdSharedN", () => {
+    const s = new Shrinker(baseOpts);
+    const shared = { type: "object", properties: { id: { type: "string" } } };
+    const schema = {
+      type: "object",
+      $defs: { mdShared1: { type: "object", properties: { z: { type: "string" } } } },
+      properties: {
+        author: shared,
+        reviewer: shared,
+        extra: { $ref: "#/$defs/mdShared1" },
+      },
+    };
+    const out = s.dedupeSchema(schema as any) as any;
+    expect(out.$defs.mdShared1.properties.z.type).toBe("string");
+    expect(out.properties.extra.$ref).toBe("#/$defs/mdShared1");
+    const hoisted = (out.properties.author.$ref as string).replace("#/$defs/", "");
+    expect(hoisted).not.toBe("mdShared1");
+    expect(out.$defs[hoisted].properties.id.type).toBe("string");
+  });
+
   it("leaves single-occurrence schemas alone", () => {
     const s = new Shrinker(baseOpts);
     const schema = {

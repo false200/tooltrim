@@ -78,7 +78,8 @@ async function connectStdio(spec: UpstreamSpec): Promise<Client> {
   const transport = new StdioClientTransport({
     command,
     args,
-    env: { ...(process.env as Record<string, string>), ...(spec.env ?? {}) },
+    // SDK merges PATH/HOME. Copying process.env would leak API keys to printEnv.
+    env: spec.env,
     stderr: "pipe",
   });
   const client = new Client(

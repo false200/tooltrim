@@ -54,7 +54,8 @@ async function main(): Promise<void> {
     const transport = new StdioClientTransport({
       command,
       args,
-      env: { ...(process.env as Record<string, string>), ...(u.env ?? {}) },
+      // SDK merges PATH/HOME. Copying process.env would leak API keys to printEnv.
+      env: u.env,
       stderr: "pipe",
     });
     const client = new Client({ name: "tooltrim-bench-preflight", version: "0.1.0" }, { capabilities: {} });

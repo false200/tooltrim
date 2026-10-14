@@ -86,6 +86,9 @@ export function isBlockedTool(
   return blocked.includes(namespaced) || blocked.includes(original);
 }
 
+// shortcut: 24 days, lower it when a caller can cancel the upstream request
+const UPSTREAM_CALL_TIMEOUT_MS = 2_147_483_647;
+
 /** Race `work` against a timer. A late rejection must not surface as unhandled. */
 export async function raceTimeout<T>(
   work: Promise<T>,
@@ -205,7 +208,7 @@ export class Aggregator {
       return { tools };
     });
 
-    server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       const name = req.params.name;
       // The route table belongs to whoever listed last. Another caller's token gets its own list.
       if (this.toolsKey !== this.authKey() || !this.toolRoute.has(name)) {
@@ -233,10 +236,14 @@ export class Aggregator {
         name,
       });
       try {
-        const result = await conn.client.callTool({
-          name: route.originalName,
-          arguments: req.params.arguments ?? {},
-        });
+        const result = await conn.client.callTool(
+          {
+            name: route.originalName,
+            arguments: req.params.arguments ?? {},
+          },
+          undefined,
+          { timeout: UPSTREAM_CALL_TIMEOUT_MS, signal: extra.signal },
+        );
         const dur = Date.now() - start;
         this.deps.tracer?.trace({
           dir: "in",
@@ -277,7 +284,7 @@ export class Aggregator {
       return { resourceTemplates: templates };
     });
 
-    server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+    server.setRequestHandler(ReadResourceRequestSchema, async (req, extra) => {
       const uri = req.params.uri;
       const upstreamId = await this.routeResource(uri);
       if (!upstreamId) {
@@ -287,7 +294,10 @@ export class Aggregator {
       if (!conn || conn.status !== "connected") {
         throw new Error(`upstream "${upstreamId}" is not connected`);
       }
-      return await conn.client.readResource({ uri });
+      return await conn.client.readResource(
+        { uri },
+        { timeout: UPSTREAM_CALL_TIMEOUT_MS, signal: extra.signal },
+      );
     });
 
     server.setRequestHandler(ListPromptsRequestSchema, async () => {
@@ -295,7 +305,7 @@ export class Aggregator {
       return { prompts };
     });
 
-    server.setRequestHandler(GetPromptRequestSchema, async (req) => {
+    server.setRequestHandler(GetPromptRequestSchema, async (req, extra) => {
       const name = req.params.name;
       if (this.promptsKey !== this.authKey() || !this.promptRoute.has(name)) {
         await this.collectPrompts();
@@ -308,10 +318,13 @@ export class Aggregator {
       if (!conn || conn.status !== "connected") {
         throw new Error(`upstream "${route.upstreamId}" is not connected`);
       }
-      return await conn.client.getPrompt({
-        name: route.original,
-        arguments: req.params.arguments,
-      });
+      return await conn.client.getPrompt(
+        {
+          name: route.original,
+          arguments: req.params.arguments,
+        },
+        { timeout: UPSTREAM_CALL_TIMEOUT_MS, signal: extra.signal },
+      );
     });
   }
 
@@ -354,7 +367,7 @@ export class Aggregator {
             const result = await this.callWithTimeout(
               id,
               "tools/list",
-              conn.client.listTools(cursor ? { cursor } : undefined),
+              conn.client.listTools(cursor ? { cursor } : undefined, this.listRequestOptions()),
             );
             return { items: result.tools ?? [], nextCursor: result.nextCursor };
           });
@@ -440,6 +453,11 @@ export class Aggregator {
     );
   }
 
+  /** The SDK otherwise stops the request at 60s, so a higher config value never applies. */
+  private listRequestOptions(): { timeout: number } {
+    return { timeout: this.deps.cfg.upstreamTimeoutMs ?? 30_000 };
+  }
+
   /**
    * Concrete `resources/list` hits win. A miss falls through to a resource
    * template (`file://{path}`), which is how filesystem servers expose reads.
@@ -475,7 +493,7 @@ export class Aggregator {
             const result = await this.callWithTimeout(
               id,
               "resources/list",
-              conn.client.listResources(cursor ? { cursor } : undefined),
+              conn.client.listResources(cursor ? { cursor } : undefined, this.listRequestOptions()),
             );
             return { items: result.resources ?? [], nextCursor: result.nextCursor };
           });
@@ -534,7 +552,10 @@ export class Aggregator {
             const result = await this.callWithTimeout(
               id,
               "resources/templates/list",
-              conn.client.listResourceTemplates(cursor ? { cursor } : undefined),
+              conn.client.listResourceTemplates(
+                cursor ? { cursor } : undefined,
+                this.listRequestOptions(),
+              ),
             );
             return { items: result.resourceTemplates ?? [], nextCursor: result.nextCursor };
           });
@@ -586,7 +607,7 @@ export class Aggregator {
             const result = await this.callWithTimeout(
               id,
               "prompts/list",
-              conn.client.listPrompts(cursor ? { cursor } : undefined),
+              conn.client.listPrompts(cursor ? { cursor } : undefined, this.listRequestOptions()),
             );
             return { items: result.prompts ?? [], nextCursor: result.nextCursor };
           });

@@ -55,7 +55,9 @@ export async function runMeasure(opts: MeasureOptions = {}): Promise<void> {
         err,
       } = await eachPage(async (cursor) => {
         const result = await raceTimeout(
-          conn.client.listTools(cursor ? { cursor } : undefined),
+          conn.client.listTools(cursor ? { cursor } : undefined, {
+            timeout: config.upstreamTimeoutMs,
+          }),
           config.upstreamTimeoutMs,
           `upstream "${id}" tools/list timed out after ${config.upstreamTimeoutMs}ms`,
         );
