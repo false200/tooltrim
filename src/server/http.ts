@@ -78,9 +78,11 @@ export async function startHttpServer(args: {
   const requestedPort = cfg.inbound.http.port;
   let boundPort = requestedPort;
 
+  // Never log the raw value: a Redis URL often carries the password.
+  const sessionsMode = sessions === "stateless" ? "stateless" : "custom";
   if (sessions !== "stateless") {
     log.warn(
-      { sessions },
+      { sessions: sessionsMode },
       "stateful sessions are not yet implemented in v0.1; falling back to stateless behavior",
     );
   }
@@ -167,7 +169,10 @@ export async function startHttpServer(args: {
       resolve();
     });
   });
-  log.info({ host, port: boundPort, path: mcpPath, sessions }, "inbound HTTP transport listening");
+  log.info(
+    { host, port: boundPort, path: mcpPath, sessions: sessionsMode },
+    "inbound HTTP transport listening",
+  );
 
   return {
     port: boundPort,

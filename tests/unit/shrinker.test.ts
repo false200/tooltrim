@@ -1,4 +1,5 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -106,6 +107,30 @@ describe("Shrinker - description rules", () => {
     expect(s.shrinkDescription(input, 40)).toBe(input);
     await s.flushCache();
     await expect(readFile(cachePath, "utf8")).rejects.toThrow();
+  });
+
+  it("recomputes rules instead of reusing a cached description", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-shrink-"));
+    const cachePath = path.join(dir, "cache.json");
+    const input = "Please utilize this tool.";
+    const hash = createHash("sha256").update(input).digest("hex").slice(0, 24);
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        version: 1,
+        entries: { [`desc:rules:80:${hash}`]: "STALE" },
+      }),
+    );
+    const s = new Shrinker({
+      mode: "rules",
+      maxDescriptionChars: 80,
+      dedupeSchemas: false,
+      cachePath,
+    });
+    await s.loadCache();
+    const out = s.shrinkDescription(input, 80);
+    expect(out).not.toBe("STALE");
+    expect(out.toLowerCase()).not.toContain("please");
   });
 
   it("does not reuse a rules cache entry in llm mode", async () => {
