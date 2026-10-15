@@ -65,7 +65,7 @@ inbound:
   http:
     enabled: true
     host: 127.0.0.1
-    port: 8799
+    port: ${BENCH_HTTP_PORT:-8799}
     path: /mcp
     sessions: stateless
 

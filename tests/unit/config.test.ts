@@ -11,6 +11,7 @@ import {
   validateConfig,
 } from "../../src/config/load.js";
 import { VERSION } from "../../src/version.js";
+import { loadBenchProxyConfig } from "../../bench/config.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../../package.json") as { version: string };
@@ -90,6 +91,7 @@ describe("config schema", () => {
           name: "visible",
           auth: { type: "header", name: "Authorization", value: "ghp_literal" },
           url: "https://user:s3cret@example.com/mcp?api_key=abcd1234&x=1",
+          endpoint: "https://ghp_abcdefghij@collector.example/v1/traces",
           sessions: "redis://:s3cret@127.0.0.1:6379/0",
           command: ["--token", "super-secret-value", "--token=ghp_literalvalue", "keep-me"],
           headers: { "X-Custom-Auth": "not-a-standard-name", Accept: "application/json" },
@@ -100,6 +102,7 @@ describe("config schema", () => {
         name: "visible",
         auth: { type: "header", name: "Authorization", value: "***" },
         url: "https://***@example.com/mcp?api_key=***&x=1",
+        endpoint: "https://***@collector.example/v1/traces",
         sessions: "redis://***@127.0.0.1:6379/0",
         command: ["--token", "***", "--token=***", "keep-me"],
         headers: { "X-Custom-Auth": "***", Accept: "***" },
@@ -147,6 +150,23 @@ describe("config schema", () => {
     }
   });
 
+  it("rejects a list timeout setTimeout would turn into 1ms", () => {
+    expect(() =>
+      tooltrimConfigSchema.parse({
+        servers: { x: { transport: "stdio", command: ["node"] } },
+        upstreamTimeoutMs: 2_147_483_648,
+      }),
+    ).toThrow();
+  });
+
+  it("accepts a port written as a numeric string", () => {
+    const cfg = tooltrimConfigSchema.parse({
+      servers: { x: { transport: "stdio", command: ["node"] } },
+      inbound: { http: { port: "8800" } },
+    });
+    expect(cfg.inbound.http.port).toBe(8800);
+  });
+
   it("normalizes empty optional sections via defaults", () => {
     const cfg = tooltrimConfigSchema.parse({
       servers: { x: { transport: "stdio", command: ["a"] } },
@@ -155,5 +175,24 @@ describe("config schema", () => {
     expect(cfg.filters.deny).toEqual([]);
     expect(cfg.observability.audit.enabled).toBe(false);
     expect(cfg.observability.metrics.prometheus.enabled).toBe(false);
+  });
+
+  it("honors BENCH_HTTP_PORT and skips github when the token is missing", async () => {
+    const previousPort = process.env.BENCH_HTTP_PORT;
+    const previousToken = process.env.GITHUB_TOKEN;
+    process.env.BENCH_HTTP_PORT = "8801";
+    delete process.env.GITHUB_TOKEN;
+    try {
+      const config = await loadBenchProxyConfig();
+      expect(config.inbound.http.port).toBe(8801);
+      expect(config.servers.github).toBeUndefined();
+      expect(config.servers.everything).toBeTruthy();
+      expect(process.env.GITHUB_TOKEN).toBeUndefined();
+    } finally {
+      if (previousPort === undefined) delete process.env.BENCH_HTTP_PORT;
+      else process.env.BENCH_HTTP_PORT = previousPort;
+      if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousToken;
+    }
   });
 });

@@ -15,9 +15,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runProxy, type ProxyHandle } from "../src/proxy.js";
-import { loadConfig } from "../src/config/load.js";
 import { configureLogger } from "../src/logger.js";
-import { BENCH_HTTP_URL, PROXY_CONFIG_PATH, RESULTS_DIR, UPSTREAMS } from "./config.js";
+import { BENCH_HTTP_URL, loadBenchProxyConfig, RESULTS_DIR, UPSTREAMS } from "./config.js";
 
 const SAMPLES = Number(process.env.BENCH_LATENCY_SAMPLES ?? 100);
 const WARMUP = 5;
@@ -140,7 +139,7 @@ async function openProxyClient(): Promise<Client> {
 }
 
 async function bootProxy(): Promise<ProxyHandle> {
-  const { config } = await loadConfig({ configPath: PROXY_CONFIG_PATH });
+  const config = await loadBenchProxyConfig();
   // Latency phase always uses the unfiltered "all" config so we can call
   // `everything.echo` without it being denied.
   config.filters.allow = [];
@@ -161,9 +160,7 @@ function printTable(report: LatencyReport): void {
     `${r.max.toFixed(1)} ms`,
     `${r.mean.toFixed(1)} ms`,
   ]);
-  const widths = headers.map((h, i) =>
-    Math.max(h.length, ...rows.map((row) => row[i]!.length)),
-  );
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((row) => row[i]!.length)));
   const fmt = (cells: string[]) =>
     cells.map((c, i) => (i < 2 ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ");
   process.stdout.write(`\n[latency] ${report.samples} samples per row\n`);

@@ -30,13 +30,12 @@ import {
   AGENT_TASK_PROMPT,
   BENCH_HTTP_URL,
   DEFAULT_ANTHROPIC_MODEL,
-  PROXY_CONFIG_PATH,
+  loadBenchProxyConfig,
   RESULTS_DIR,
   SCENARIOS,
 } from "./config.js";
 import { DirectFanOutClient } from "./direct-client.js";
 import { runProxy, type ProxyHandle } from "../src/proxy.js";
-import { loadConfig } from "../src/config/load.js";
 import { configureLogger } from "../src/logger.js";
 
 const SEPARATOR = "__";
@@ -327,7 +326,7 @@ async function openDirectBackend(): Promise<ToolBackend> {
 }
 
 async function openProxyBackend(): Promise<ToolBackend> {
-  const { config } = await loadConfig({ configPath: PROXY_CONFIG_PATH });
+  const config = await loadBenchProxyConfig();
   // Apply the tight task scenario for the proxy pass.
   config.filters.allow = SCENARIOS.task.allow;
   config.filters.deny = SCENARIOS.task.deny;

@@ -8,6 +8,7 @@ import {
 import { ToolFilter } from "../../src/core/filter.js";
 import { Shrinker } from "../../src/core/shrinker.js";
 import { tooltrimConfigSchema, type TooltrimConfig } from "../../src/config/schema.js";
+import type { MetricsRecorder } from "../../src/observability/metrics.js";
 import type { UpstreamConnection, UpstreamStatus } from "../../src/upstream/types.js";
 import {
   getInboundContext,
@@ -531,5 +532,53 @@ describe("Aggregator listings", () => {
         agg.routeResource("mem://a"),
       ),
     ).toBeUndefined();
+  });
+
+  it("records a tool isError result as a failed call", async () => {
+    const recorded: boolean[] = [];
+    let fail = true;
+    const cfg = cfgFor(["gh"]);
+    const connections = new Map([
+      [
+        "gh",
+        fakeConn(
+          "gh",
+          {
+            listTools: async () => ({
+              tools: [{ name: "echo", description: "x", inputSchema: { type: "object" } }],
+            }),
+            callTool: async () => ({
+              content: [{ type: "text", text: "nope" }],
+              ...(fail ? { isError: true } : {}),
+            }),
+          },
+          { tools: {} },
+        ),
+      ],
+    ]);
+    const agg = new Aggregator({
+      cfg,
+      upstream: { connections } as unknown as UpstreamManager,
+      filter: ToolFilter.fromConfig(cfg),
+      shrinker: Shrinker.fromConfig(cfg),
+      metrics: {
+        recordCall: (_upstream: string, _tool: string, _dur: number, ok: boolean) => {
+          recorded.push(ok);
+        },
+      } as unknown as MetricsRecorder,
+    });
+    const server = agg.createServer();
+    const handler = (
+      server as unknown as {
+        _requestHandlers: Map<string, (req: unknown, extra: unknown) => Promise<unknown>>;
+      }
+    )._requestHandlers.get("tools/call");
+    if (!handler) throw new Error("tools/call handler missing");
+    const call = () =>
+      handler({ method: "tools/call", params: { name: "gh.echo", arguments: {} } }, {});
+    await call();
+    fail = false;
+    await call();
+    expect(recorded).toEqual([false, true]);
   });
 });

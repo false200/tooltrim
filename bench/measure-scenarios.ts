@@ -13,10 +13,10 @@ import { Aggregator } from "../src/core/aggregator.js";
 import { ToolFilter } from "../src/core/filter.js";
 import { Shrinker } from "../src/core/shrinker.js";
 import { byteLength, countTokens } from "../src/core/tokenizer.js";
-import { loadConfig } from "../src/config/load.js";
+import type { TooltrimConfig } from "../src/config/schema.js";
 import { UpstreamManager } from "../src/upstream/manager.js";
 import { configureLogger } from "../src/logger.js";
-import { PROXY_CONFIG_PATH, RESULTS_DIR, SCENARIOS } from "./config.js";
+import { loadBenchProxyConfig, RESULTS_DIR, SCENARIOS } from "./config.js";
 
 export interface MeasureRow {
   scenario: string;
@@ -38,7 +38,7 @@ export interface MeasureReport {
 export async function runMeasureScenarios(): Promise<MeasureReport> {
   configureLogger({ level: "warn", toStderr: true });
   process.stderr.write("[measure] loading config...\n");
-  const { config } = await loadConfig({ configPath: PROXY_CONFIG_PATH });
+  const config = await loadBenchProxyConfig();
 
   const upstream = new UpstreamManager(config);
   process.stderr.write("[measure] connecting upstreams...\n");
@@ -89,7 +89,7 @@ export async function runMeasureScenarios(): Promise<MeasureReport> {
 }
 
 async function measureOnce(
-  config: Awaited<ReturnType<typeof loadConfig>>["config"],
+  config: TooltrimConfig,
   upstream: UpstreamManager,
   label: string,
   filter: { allow: string[]; deny: string[] },

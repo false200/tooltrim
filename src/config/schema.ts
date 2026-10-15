@@ -85,8 +85,11 @@ const inboundSchema = z
       .object({
         enabled: z.boolean().default(false),
         host: z.string().default("127.0.0.1"),
-        /** 0 lets the OS pick a free port. */
-        port: z.number().int().min(0).max(65535).default(8787),
+        /** 0 lets the OS pick a free port. A numeric string is allowed so `${PORT}` survives env expansion. */
+        port: z.preprocess(
+          (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number(v) : v),
+          z.number().int().min(0).max(65535).default(8787),
+        ),
         path: z.string().default("/mcp"),
         sessions: z.union([z.literal("stateless"), z.string()]).default("stateless"),
       })
@@ -151,8 +154,11 @@ export const tooltrimConfigSchema = z.object({
   observability: observabilitySchema,
   policy: policySchema,
   logLevel: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
-  /** Timeout in ms for upstream listTools calls (default 30s). */
-  upstreamTimeoutMs: z.number().int().min(1000).default(30_000),
+  /**
+   * Timeout in ms for upstream list calls (default 30s).
+   * setTimeout treats anything above 2^31-1 as 1ms, which would abort every list.
+   */
+  upstreamTimeoutMs: z.number().int().min(1000).max(2_147_483_647).default(30_000),
 });
 
 export type StdioServerConfig = z.infer<typeof stdioServerSchema>;
