@@ -115,6 +115,8 @@ export function redactSecrets(value: unknown): unknown {
 function redactSecretText(value: string): string {
   // `*` so `redis://:password@host` is covered; `+` required a username.
   let out = value.replace(/:\/\/[^/\s:@]*:[^/\s@]+@/g, "://***@");
+  // `https://token@host` has no colon. The password form above does not match it.
+  out = out.replace(/:\/\/[^/\s:@]+@/g, "://***@");
   out = out.replace(
     /([?&][^=&\s]*(?:token|secret|password|api[-_]?key)[^=&\s]*)=[^&\s]*/gi,
     "$1=***",

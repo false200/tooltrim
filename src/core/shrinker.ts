@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TooltrimConfig } from "../config/schema.js";
+import { getLogger } from "../logger.js";
 
 export interface ShrinkOptions {
   mode: "off" | "rules" | "llm";
@@ -51,6 +52,8 @@ const BOILERPLATE_PHRASES: RegExp[] = [
 // `List<User>` has none of those, so type parameters stay intact.
 const HTML_TAG =
   /<\/?[A-Za-z][^>]*\s[^=>]*=[^>]*>|<\/[A-Za-z][^>]*>|<[A-Za-z][^>]*\/>|<(?:br|hr|p|li|ul|ol|div|span|code|pre|em|strong|b|i|a|img|blockquote|h[1-6])>/gi;
+
+let llmMissWarned = false;
 
 const FILLER_PHRASES: Array<[RegExp, string]> = [
   [/\bplease\s+/gi, ""],
@@ -139,6 +142,12 @@ export class Shrinker {
       const cacheKey = `desc:${this.opts.mode}:${maxChars}:${this.hash(input)}`;
       const cached = this.cache.entries[cacheKey];
       if (cached !== undefined) return cached;
+      if (!llmMissWarned) {
+        llmMissWarned = true;
+        getLogger().warn(
+          "shrink.mode is llm but the cache has no entry; descriptions are unchanged",
+        );
+      }
       return input;
     }
     // Rules are pure. A disk cache would keep the previous rules after an upgrade.

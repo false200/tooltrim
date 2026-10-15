@@ -245,16 +245,25 @@ export class Aggregator {
           { timeout: UPSTREAM_CALL_TIMEOUT_MS, signal: extra.signal },
         );
         const dur = Date.now() - start;
+        // The transport succeeded. The tool can still report failure via isError.
+        const ok = !toolResultFailed(result);
         this.deps.tracer?.trace({
           dir: "in",
           upstream: route.upstreamId,
           method: "tools/call",
           name,
-          ok: true,
+          ok,
           durMs: dur,
+          err: ok ? undefined : "tool returned isError",
         });
-        this.deps.metrics?.recordCall(route.upstreamId, name, dur, true);
-        await this.recordAudit(route.upstreamId, name, true, dur);
+        this.deps.metrics?.recordCall(route.upstreamId, name, dur, ok);
+        await this.recordAudit(
+          route.upstreamId,
+          name,
+          ok,
+          dur,
+          ok ? undefined : "tool returned isError",
+        );
         return result;
       } catch (err) {
         const dur = Date.now() - start;
@@ -724,4 +733,10 @@ export class Aggregator {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function toolResultFailed(result: unknown): boolean {
+  return (
+    !!result && typeof result === "object" && (result as { isError?: unknown }).isError === true
+  );
 }

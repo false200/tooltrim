@@ -11,9 +11,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runProxy, type ProxyHandle } from "../src/proxy.js";
-import { loadConfig } from "../src/config/load.js";
 import { configureLogger } from "../src/logger.js";
-import { BENCH_HTTP_URL, PROXY_CONFIG_PATH, RESULTS_DIR } from "./config.js";
+import { BENCH_HTTP_URL, loadBenchProxyConfig, RESULTS_DIR } from "./config.js";
 
 const CONCURRENCY = Number(process.env.BENCH_CONCURRENCY ?? 50);
 
@@ -91,7 +90,7 @@ export async function runThroughput(): Promise<ThroughputReport> {
 }
 
 async function bootProxy(): Promise<ProxyHandle> {
-  const { config } = await loadConfig({ configPath: PROXY_CONFIG_PATH });
+  const config = await loadBenchProxyConfig();
   config.filters.allow = [];
   config.filters.deny = [];
   config.shrink.mode = "off";
@@ -131,7 +130,9 @@ async function snapshotMetrics(): Promise<void> {
 }
 
 function printReport(r: ThroughputReport): void {
-  process.stdout.write(`\n[throughput] ${r.concurrency} concurrent tools/call against everything.echo\n`);
+  process.stdout.write(
+    `\n[throughput] ${r.concurrency} concurrent tools/call against everything.echo\n`,
+  );
   process.stdout.write(`Total time     ${r.totalMs.toFixed(1)} ms\n`);
   process.stdout.write(`Errors         ${r.errors}\n`);
   process.stdout.write(`Ops/sec        ${r.opsPerSec.toFixed(1)}\n`);

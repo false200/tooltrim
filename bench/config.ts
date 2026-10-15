@@ -1,5 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadConfig } from "../src/config/load.js";
+import type { TooltrimConfig } from "../src/config/schema.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -12,6 +14,27 @@ export const PROXY_CONFIG_PATH = path.resolve(BENCH_ROOT, "examples", "benchmark
 
 export const BENCH_HTTP_PORT = Number(process.env.BENCH_HTTP_PORT ?? 8799);
 export const BENCH_HTTP_URL = `http://127.0.0.1:${BENCH_HTTP_PORT}/mcp`;
+
+/**
+ * Load the bench proxy config. A missing GITHUB_TOKEN must not abort the
+ * local phases: the github upstream is omitted and the others still start.
+ * The token line in the yaml has no default, so it is filled only for this load.
+ */
+export async function loadBenchProxyConfig(): Promise<TooltrimConfig> {
+  const previous = process.env.GITHUB_TOKEN;
+  const missing = !previous;
+  if (missing) process.env.GITHUB_TOKEN = " ";
+  try {
+    const { config } = await loadConfig({ configPath: PROXY_CONFIG_PATH });
+    if (missing) delete config.servers.github;
+    return config;
+  } finally {
+    if (missing) {
+      if (previous === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previous;
+    }
+  }
+}
 
 /**
  * The 5 upstream MCP servers under test. These mirror examples/benchmark.config.yaml
