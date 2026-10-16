@@ -59,6 +59,39 @@ describe("tooltrim measure", () => {
   );
 
   it(
+    "still prints the other servers when one tools/list fails",
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-"));
+      const cfgPath = path.join(dir, "tooltrim.config.json");
+      const server = {
+        transport: "stdio",
+        command: ["node", tsxCli, echoStdio],
+      };
+      const cfg = {
+        servers: {
+          a: { ...server, env: { ECHO_SERVER_NAME: "a" } },
+          b: { ...server, env: { ECHO_SERVER_NAME: "b", ECHO_FAIL_LIST: "1" } },
+        },
+        shrink: { mode: "off", cachePath: path.join(dir, "cache.json") },
+        observability: { trace: { sink: "off" } },
+        inbound: { stdio: false, http: { enabled: false } },
+        logLevel: "silent",
+      };
+      await writeFile(cfgPath, JSON.stringify(cfg), "utf8");
+
+      try {
+        const { stdout, code } = await runCli(["measure", "--config", cfgPath]);
+        expect(code).toBe(0);
+        expect(stdout).toMatch(/^a\s+3 → 3/m);
+        expect(stdout).toMatch(/^b\s+0 → 0/m);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  it(
     "omits blocked tools from the trimmed count",
     async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-"));

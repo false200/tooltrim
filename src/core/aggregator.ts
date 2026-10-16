@@ -27,18 +27,43 @@ const MAX_LIST_PAGES = 50;
 
 // shortcut: {var} matches slashes too, revisit if templates differ only by RFC 6570 reserved chars
 export function uriTemplateMatches(template: string, uri: string): boolean {
-  let pattern = "^";
+  // A regex `.*` per variable backtracks until one resources/read freezes the process.
+  const parts: string[] = [];
+  let lit = "";
   for (let i = 0; i < template.length; i++) {
     if (template[i] === "{") {
       const end = template.indexOf("}", i);
       if (end < 0) return false;
-      pattern += ".*";
+      parts.push(lit);
+      lit = "";
       i = end;
       continue;
     }
-    pattern += template[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    lit += template[i]!;
   }
-  return new RegExp(`${pattern}$`).test(uri);
+  parts.push(lit);
+  if (parts.length === 1) return uri === parts[0];
+
+  let from = 0;
+  for (let p = 0; p < parts.length; p++) {
+    const part = parts[p]!;
+    if (p === 0) {
+      if (!uri.startsWith(part)) return false;
+      from = part.length;
+      continue;
+    }
+    if (p === parts.length - 1) {
+      const start = uri.length - part.length;
+      // `.*` does not cross a newline.
+      if (start < from || uri.slice(from, start).includes("\n")) return false;
+      return uri.endsWith(part);
+    }
+    const idx = part ? uri.indexOf(part, from) : from;
+    const nl = uri.indexOf("\n", from);
+    if (idx < 0 || (nl !== -1 && nl < idx)) return false;
+    from = idx + part.length;
+  }
+  return true;
 }
 
 export function matchResourceTemplate(

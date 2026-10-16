@@ -49,9 +49,9 @@ const BOILERPLATE_PHRASES: RegExp[] = [
 
 // Closing tags, tags that have an attribute (`<a href="...">`), and a short list of
 // common tags. A space alone is not enough: `<file path>` is a placeholder.
-// `List<User>` has none of those, so type parameters stay intact.
+// A tag glued to a word is a type parameter (`Vec<a>`, `a<b>c`), not HTML.
 const HTML_TAG =
-  /<\/?[A-Za-z][^>]*\s[^=>]*=[^>]*>|<\/[A-Za-z][^>]*>|<[A-Za-z][^>]*\/>|<(?:br|hr|p|li|ul|ol|div|span|code|pre|em|strong|b|i|a|img|blockquote|h[1-6])>/gi;
+  /(?<![\w])<\/?[A-Za-z][^>]*\s[^=>]*=[^>]*>|<\/[A-Za-z][^>]*>|(?<![\w])<[A-Za-z][^>]*\/>|(?<![\w])<(?:br|hr|p|li|ul|ol|div|span|code|pre|em|strong|b|i|a|img|blockquote|h[1-6])>/gi;
 
 let llmMissWarned = false;
 

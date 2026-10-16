@@ -65,6 +65,26 @@ async function startHarness(opts: {
 
 describe.sequential("end-to-end proxy", () => {
   it(
+    "closes while the HTTP client is still connected",
+    async () => {
+      const h = await startHarness({
+        servers: { a: echoStdioConfig("a") },
+        shrink: { mode: "off" },
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        h.close().then(() => "closed" as const),
+        new Promise<"hung">((resolve) => {
+          timer = setTimeout(() => resolve("hung"), 2000);
+        }),
+      ]);
+      clearTimeout(timer);
+      expect(result).toBe("closed");
+    },
+    30_000,
+  );
+
+  it(
     "merges tool lists from two upstream stdio servers under namespaced names",
     async () => {
       const h = await startHarness({
