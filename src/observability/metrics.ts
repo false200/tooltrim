@@ -127,7 +127,9 @@ export async function startMetrics(cfg: TooltrimConfig): Promise<MetricsServerHa
     recorder,
     close: () =>
       new Promise<void>((resolve) => {
+        // Idle keep-alive clients would block close() until the second Ctrl+C.
         server.close(() => resolve());
+        server.closeAllConnections();
       }),
   };
 }

@@ -1,3 +1,4 @@
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { UpstreamManager } from "../upstream/manager.js";
 import { eachPage, isBlockedTool, raceTimeout } from "../core/aggregator.js";
 import { ToolFilter } from "../core/filter.js";
@@ -49,25 +50,41 @@ export async function runMeasure(opts: MeasureOptions = {}): Promise<void> {
         });
         continue;
       }
-      const {
-        items: raw,
-        truncated,
-        err,
-      } = await eachPage(async (cursor) => {
-        const result = await raceTimeout(
-          conn.client.listTools(cursor ? { cursor } : undefined, {
-            timeout: config.upstreamTimeoutMs,
-          }),
-          config.upstreamTimeoutMs,
-          `upstream "${id}" tools/list timed out after ${config.upstreamTimeoutMs}ms`,
-        );
-        return { items: result.tools ?? [], nextCursor: result.nextCursor };
-      });
-      if (truncated) {
+      let raw: Tool[];
+      try {
+        const listed = await eachPage(async (cursor) => {
+          const result = await raceTimeout(
+            conn.client.listTools(cursor ? { cursor } : undefined, {
+              timeout: config.upstreamTimeoutMs,
+            }),
+            config.upstreamTimeoutMs,
+            `upstream "${id}" tools/list timed out after ${config.upstreamTimeoutMs}ms`,
+          );
+          return { items: result.tools ?? [], nextCursor: result.nextCursor };
+        });
+        raw = listed.items;
+        if (listed.truncated) {
+          getLogger().warn(
+            { id, err: listed.err },
+            listed.err ? "tools/list stopped early" : "stopped after 50 tools/list pages",
+          );
+        }
+      } catch (err) {
+        // The proxy skips one broken catalog. Measure used to abort the whole table.
         getLogger().warn(
-          { id, err },
-          err ? "tools/list stopped early" : "stopped after 50 tools/list pages",
+          { id, err: err instanceof Error ? err.message : String(err) },
+          "upstream tools/list failed",
         );
+        rows.push({
+          server: id,
+          toolsRaw: 0,
+          toolsTrim: 0,
+          bytesRaw: 0,
+          bytesTrim: 0,
+          tokensRaw: 0,
+          tokensTrim: 0,
+        });
+        continue;
       }
       const blocked = config.policy.blockedTools;
       const filtered = raw

@@ -57,12 +57,14 @@ describe("Shrinker - description rules", () => {
   it("keeps snake_case names and type parameters", () => {
     const s = new Shrinker(baseOpts);
     const out = s.shrinkDescription(
-      "Pass max_tokens and call __init__. Returns List<User> from <code>id</code>.",
-      160,
+      "Pass max_tokens and call __init__. Returns List<User> or Vec<a>. Compare a<b>c. From <code>id</code>.",
+      200,
     );
     expect(out).toContain("max_tokens");
     expect(out).toContain("__init__");
     expect(out).toContain("List<User>");
+    expect(out).toContain("Vec<a>");
+    expect(out).toContain("a<b>c");
     expect(out).not.toContain("<code>");
   });
 

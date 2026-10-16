@@ -33,38 +33,41 @@ const server = new Server(
   },
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "echo",
-      description:
-        "This tool echoes the provided text back to the caller. Please use this when you want to verify tool routing in Tooltrim. Returns a JSON object containing the echoed text.",
-      inputSchema: {
-        type: "object",
-        properties: { text: { type: "string" } },
-        required: ["text"],
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  if (process.env.ECHO_FAIL_LIST === "1") throw new Error("list failed");
+  return {
+    tools: [
+      {
+        name: "echo",
+        description:
+          "This tool echoes the provided text back to the caller. Please use this when you want to verify tool routing in Tooltrim. Returns a JSON object containing the echoed text.",
+        inputSchema: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+        },
       },
-    },
-    {
-      name: "add",
-      description: "Use this tool to add two integers. Returns the sum.",
-      inputSchema: {
-        type: "object",
-        properties: { a: { type: "number" }, b: { type: "number" } },
-        required: ["a", "b"],
+      {
+        name: "add",
+        description: "Use this tool to add two integers. Returns the sum.",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
       },
-    },
-    {
-      name: "delete_thing",
-      description: "Deletes the provided thing.",
-      inputSchema: {
-        type: "object",
-        properties: { id: { type: "string" } },
-        required: ["id"],
+      {
+        name: "delete_thing",
+        description: "Deletes the provided thing.",
+        inputSchema: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+        },
       },
-    },
-  ],
-}));
+    ],
+  };
+});
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params;

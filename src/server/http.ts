@@ -178,7 +178,9 @@ export async function startHttpServer(args: {
     port: boundPort,
     close: () =>
       new Promise<void>((resolve) => {
+        // Idle keep-alive clients would block close() until the second Ctrl+C.
         httpServer.close(() => resolve());
+        httpServer.closeAllConnections();
       }),
   };
 }

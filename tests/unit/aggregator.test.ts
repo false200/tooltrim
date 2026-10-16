@@ -180,6 +180,13 @@ describe("Aggregator listings", () => {
   it("matches templates without treating dots as wildcards", () => {
     expect(uriTemplateMatches("https://example.com/{id}", "https://example.com/a")).toBe(true);
     expect(uriTemplateMatches("https://example.com/{id}", "https://exampleXcom/a")).toBe(false);
+    expect(uriTemplateMatches("file://{path", "file://x")).toBe(false);
+    expect(uriTemplateMatches("file://{a}{b}.txt", "file://hi.txt")).toBe(true);
+    expect(uriTemplateMatches("file://{a}{b}.txt", "file://hi.md")).toBe(false);
+    const many = `file://${"{v}".repeat(11)}.txt`;
+    const started = Date.now();
+    expect(uriTemplateMatches(many, `file://${"x".repeat(18)}`)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(50);
     expect(
       matchResourceTemplate(
         [
