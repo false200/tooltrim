@@ -176,10 +176,17 @@ export class Shrinker {
     for (const re of BOILERPLATE_PREFIXES) {
       s = s.replace(re, "");
     }
-    // 5. drop boilerplate phrases anywhere in the text
-    for (const re of BOILERPLATE_PHRASES) {
-      s = s.replace(re, "");
-    }
+    // 5. drop boilerplate phrases. A sentence with a warning stays whole.
+    // shortcut: any warning word keeps the whole sentence, split the sentence when that keeps too much filler
+    s = s
+      .split(/(?<=[.!?])\s+/)
+      .map((sent) => {
+        if (/\b(?:not|never|cannot|can't|don't|doesn't|won't)\b/i.test(sent)) return sent;
+        let next = sent;
+        for (const re of BOILERPLATE_PHRASES) next = next.replace(re, "");
+        return next;
+      })
+      .join(" ");
     // 6. filler phrases
     for (const [re, repl] of FILLER_PHRASES) {
       s = s.replace(re, repl);
@@ -238,6 +245,8 @@ export class Shrinker {
    */
   dedupeSchema(schema: Record<string, unknown>): Record<string, unknown> {
     if (!this.opts.dedupeSchemas) return schema;
+    // JSON Schema allows `true`. `delete` on a boolean throws and the list call drops every tool.
+    if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return schema;
     const counts = new Map<string, { count: number; sample: unknown }>();
     const root = JSON.parse(JSON.stringify(schema)) as Record<string, unknown>;
 
