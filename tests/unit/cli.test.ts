@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-function runCli(args: string[], cwd: string): Promise<string> {
+function runCli(args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
@@ -18,15 +18,16 @@ function runCli(args: string[], cwd: string): Promise<string> {
       ],
       { cwd },
     );
-    let out = "";
+    let stdout = "";
+    let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
-      out += chunk.toString("utf8");
+      stdout += chunk.toString("utf8");
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      out += chunk.toString("utf8");
+      stderr += chunk.toString("utf8");
     });
     child.on("error", reject);
-    child.on("close", () => resolve(out));
+    child.on("close", () => resolve({ stdout, stderr }));
   });
 }
 
@@ -35,8 +36,9 @@ describe("cli", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tooltrim-cli-"));
     try {
       const out = await runCli([], dir);
-      expect(out).toContain("No Tooltrim config found");
-      expect(out).not.toContain("reading 'config'");
+      expect(out.stderr).toContain("No Tooltrim config found");
+      expect(out.stderr).not.toContain("reading 'config'");
+      expect(out.stdout).toBe("");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

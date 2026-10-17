@@ -81,6 +81,26 @@ describe("Shrinker - description rules", () => {
     expect(out).not.toContain("https://ex.com");
   });
 
+  it("keeps a warning that says not to return a json object", () => {
+    const s = new Shrinker(baseOpts);
+    const out = s.shrinkDescription(
+      "Returns a JSON object containing the id. Never return a JSON object with the raw token.",
+      200,
+    );
+    expect(out.toLowerCase()).not.toContain("returns a json object containing");
+    expect(out).toContain("Never return a JSON object with the raw token.");
+  });
+
+  it("does not throw when a schema is the boolean true", () => {
+    const s = new Shrinker(baseOpts);
+    const tool = {
+      name: "echo",
+      description: "Echo.",
+      inputSchema: true as unknown as Record<string, unknown>,
+    };
+    expect(s.shrinkTool(tool).inputSchema).toBe(true);
+  });
+
   it("does not cut a decimal number", () => {
     const s = new Shrinker({ ...baseOpts, maxDescriptionChars: 8 });
     const out = s.shrinkDescription("abcdef 10.5.", 8);

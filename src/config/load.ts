@@ -68,10 +68,13 @@ export function parseConfigText(text: string): unknown {
   return parseYaml(text);
 }
 
-const SECRET_KEY = /token|secret|password|authorization|api[-_]?key/i;
+const SECRET_KEY =
+  /token|secret|password|authorization|api[-_]?key|private[-_]?key|credential|(?:^|_)pat$/i;
 
 function isSecretFlag(flag: string): boolean {
-  return /^-{1,2}[^\s=]*(?:token|secret|password|authorization|api[-_]?key)[^\s=]*$/i.test(flag);
+  return /^-{1,2}(?:[^\s=]*(?:token|secret|password|authorization|api[-_]?key|private[-_]?key|credential)[^\s=]*|pat)$/i.test(
+    flag,
+  );
 }
 
 export function redactSecrets(value: unknown): unknown {
@@ -118,10 +121,15 @@ function redactSecretText(value: string): string {
   // `https://token@host` has no colon. The password form above does not match it.
   out = out.replace(/:\/\/[^/\s:@]+@/g, "://***@");
   out = out.replace(
-    /([?&][^=&\s]*(?:token|secret|password|api[-_]?key)[^=&\s]*)=[^&\s]*/gi,
+    /([?&][^=&\s]*(?:token|secret|password|api[-_]?key|private[-_]?key|credential|_pat)[^=&\s]*)=[^&\s]*/gi,
     "$1=***",
   );
-  out = out.replace(/(--?[^\s=]*(?:token|secret|password|api[-_]?key)[^\s=]*)=\S+/gi, "$1=***");
+  out = out.replace(/([?&]pat)=[^&\s]*/gi, "$1=***");
+  out = out.replace(
+    /(--?[^\s=]*(?:token|secret|password|api[-_]?key|private[-_]?key|credential)[^\s=]*)=\S+/gi,
+    "$1=***",
+  );
+  out = out.replace(/(--?pat)=\S+/gi, "$1=***");
   for (const [key, envValue] of Object.entries(process.env)) {
     if (!envValue || envValue.length < 8 || !SECRET_KEY.test(key)) continue;
     if (out.includes(envValue)) out = out.split(envValue).join("***");

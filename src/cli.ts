@@ -103,7 +103,8 @@ async function startProxyCmd(configPath?: string): Promise<void> {
 }
 
 main().catch((err) => {
-  configureLogger({ level: "error" });
+  // Stdout is the MCP stream when an editor launched us. A startup error must not land there.
+  configureLogger({ level: "error", toStderr: true });
   getLogger().error({ err: (err as Error).message }, "tooltrim failed");
   process.stderr.write(`tooltrim: ${(err as Error).message}\n`);
   process.exit(1);
